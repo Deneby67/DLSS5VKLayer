@@ -175,7 +175,8 @@ void PrintStatus(const ShmHeader* h) {
     std::printf("helper_state=%u\nmodel_up=%u\nhelper_frames=%llu\n", h->helperState.load(),
                 h->modelUp.load(),
                 (unsigned long long) ShmLoad64(h->helperFramesLo, h->helperFramesHi));
-    std::printf("layer_composition_up=%u\nlayer_frames=%llu\nlayer_ms=%.2f\n",
+    std::printf("layer_pid=%u\nlayer_composition_up=%u\nlayer_frames=%llu\nlayer_ms=%.2f\n",
+                h->layerPid.load(),
                 h->layerCompositionUp.load(),
                 (unsigned long long) ShmLoad64(h->layerFramesLo, h->layerFramesHi),
                 double(BitsToFloat(h->layerMsBits.load())));
@@ -222,7 +223,10 @@ int main(int argc, char** argv) {
         h->quit.store(0);
         h->controlSeq.fetch_add(1);
     } else if (std::strcmp(cmd, "reset") == 0) {
-        ShmInitDefaults(h);
+        // Settings only, leaving the transport and both sides' status alone. Clearing the whole
+        // header on a live session takes the layer's published presence with it, and the layer
+        // republishes only when it next composes a frame.
+        ShmResetSettings(h);
     } else if (std::strcmp(cmd, "settings") == 0) {
         if (!Initialised(h)) ShmInitDefaults(h);
         PrintSettings(h);

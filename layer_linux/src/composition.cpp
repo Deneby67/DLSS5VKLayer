@@ -777,7 +777,30 @@ bool Composition::Prepare(uint32_t width, uint32_t height, VkFormat swapchainFor
             modelW, modelH, mb);
     }
 
+    // Keep the captured frame across a rebuild that does not change its shape.
+    //
+    // Almost everything here is rebuilt because the *model's* raster changed -- passes, model
+    // resolution, the down-leg filter -- while the captured frame stays the swapchain's size in the
+    // swapchain's working format. Dropping it anyway costs nothing while an application is drawing,
+    // because the next frame captures another one a moment later. It costs everything when it is not:
+    // RecordCapture unfreezes the moment _frameCaptured goes false, so the next composition reads the
+    // swapchain image instead -- and on a repaint that image holds the previous composed output, so
+    // the edit lands on top of the edit. Resetting the settings on a paused picture did exactly that,
+    // because a reset changes the model's raster.
+    const bool keepFrame = _frameCaptured && _frame.image && _width == width && _height == height &&
+                           _workFormat == work;
+    Image savedFrame{};
+    if (keepFrame) {
+        savedFrame = _frame;
+        _frame = Image{};   // detached, so DropAll leaves it alone
+    }
+
     DropAll();
+
+    if (keepFrame) {
+        _frame = savedFrame;
+        _frameCaptured = true;
+    }
 
     _swapchainFormat = swapchainFormat;
     _workFormat = work;
@@ -797,7 +820,7 @@ bool Composition::Prepare(uint32_t width, uint32_t height, VkFormat swapchainFor
     const VkImageUsageFlags dst = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     const bool ok =
-        MakeImage(_frame, width, height, work, sampled | dst) &&
+        (keepFrame || MakeImage(_frame, width, height, work, sampled | dst)) &&
         MakeImage(_keep, width, height, _keepFormat, sampled | storage) &&
         MakeImage(_proxy, width, height, proxyFormat, sampled | storage | src) &&
         MakeImage(_model, modelW, modelH, proxyFormat, sampled | src | dst) &&
@@ -1148,6 +1171,19 @@ DlssNrConstants Composition::BaseConstants(const FrameSettings& s) const {
 // ---------------------------------------------------------------------------
 // Leg 1: the frame the model is shown
 // ---------------------------------------------------------------------------
+bool Composition::RecordRestore(VkCommandBuffer cb, VkImage swapchainImage) {
+    if (!_usable || !_frame.image || !_frameCaptured) return false;
+    Transition(cb, _frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    TransitionSwapchain(cb, swapchainImage, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    CopyWholeImage(cb, _frame.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImage,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, _width, _height);
+    // Back to what the presentation engine requires, on every path out.
+    TransitionSwapchain(cb, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    return true;
+}
+
 bool Composition::RecordCapture(VkCommandBuffer cb, VkImage swapchainImage, const FrameSettings& s) {
     if (!_usable || !_frame.image) return false;
 
