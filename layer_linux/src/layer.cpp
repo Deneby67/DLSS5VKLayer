@@ -486,6 +486,8 @@ struct SwapchainState {
     bool leg2Pending = false;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cb = VK_NULL_HANDLE;
+    // Reused by the present path; resizing only occurs when an unusual caller supplies more waits.
+    std::vector<VkPipelineStageFlags> waitStages;
     bool ready = false;
     bool passThrough = false;
 
@@ -750,7 +752,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_EnumeratePhysicalDevices(
 // Both declared here for the idle repaint, which draws a frame the application did not ask for.
 static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
                            VkImage swapchainImage, uint32_t waitCount, const VkSemaphore* pWaits,
-                           bool repaint);
+                           bool repaint, bool* waitsConsumed);
 
 // Put the captured frame back, for when the effect is switched off while the picture is still.
 //
@@ -1088,7 +1090,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(
 
                 const bool drew =
                     on ? ProcessPresent(dc, *sc, sc->queue, sc->images[index], 0, nullptr,
-                                        /*repaint=*/true)
+                                         /*repaint=*/true, nullptr)
                        : RestorePresent(dc, *sc, sc->images[index]);
                 if (drew) {
                     VkPresentInfoKHR pi{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
@@ -1396,8 +1398,10 @@ static bool NoteVk(DeviceChain* dc, VkResult r, const char* what) {
 //
 // Every path out leaves the swapchain image in PRESENT_SRC_KHR, including the ones that give up.
 static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
-                           VkImage swapchainImage, uint32_t waitCount,
-                           const VkSemaphore* waitSemaphores, bool repaint) {
+                            VkImage swapchainImage, uint32_t waitCount,
+                            const VkSemaphore* waitSemaphores, bool repaint,
+                            bool* waitsConsumed) {
+    if (waitsConsumed) *waitsConsumed = false;
     if (!sc.comp) return false;
     VkDevice d = dc->self;
     VkCommandBuffer cb = sc.cb;
@@ -1544,10 +1548,11 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
 
     // Only the first submit waits: the later one is ordered behind it on the same queue and fenced
     // besides, and a binary semaphore may be waited on once per signal.
-    std::vector<VkPipelineStageFlags> waitStages(waitCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    if (sc.waitStages.size() < waitCount)
+        sc.waitStages.resize(waitCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
     si.waitSemaphoreCount = waitCount;
     si.pWaitSemaphores = waitCount ? waitSemaphores : nullptr;
-    si.pWaitDstStageMask = waitCount ? waitStages.data() : nullptr;
+    si.pWaitDstStageMask = waitCount ? sc.waitStages.data() : nullptr;
     const auto dropWaits = [&] {
         si.waitSemaphoreCount = 0;
         si.pWaitSemaphores = nullptr;
@@ -1557,6 +1562,7 @@ static bool ProcessPresent(DeviceChain* dc, SwapchainState& sc, VkQueue queue,
     const auto endAndSubmit = [&](VkFence fence) {
         if (!NoteVk(dc, dc->vkEndCommandBuffer(cb), "vkEndCommandBuffer")) return false;
         if (!NoteVk(dc, dc->vkQueueSubmit(queue, 1, &si, fence), "vkQueueSubmit")) return false;
+        if (waitsConsumed && si.waitSemaphoreCount != 0) *waitsConsumed = true;
         return true;
     };
     const auto waitAndReset = [&](VkFence fence) {
@@ -1693,19 +1699,19 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue,
                 continue;
             }
             const uint32_t waitCount = waitsConsumed ? 0u : pPresentInfo->waitSemaphoreCount;
-            waitsConsumed = true;
+            bool submittedWaits = false;
             const bool composed = ProcessPresent(dc, sc, queue, sc.images[pPresentInfo->pImageIndices[i]],
                                                  waitCount, pPresentInfo->pWaitSemaphores,
-                                                 /*repaint=*/false);
+                                                 /*repaint=*/false, &submittedWaits);
+            waitsConsumed = waitsConsumed || submittedWaits;
             if (!composed) ++dc->framesPassedThrough;
             if (VerboseEnabled()) {
                 Log("[present] swapchain=%p image=%u seq=%u composed=%d",
                     (void*)pPresentInfo->pSwapchains[i], pPresentInfo->pImageIndices[i],
                     dc->shm.hdr ? dc->shm.hdr->seq_req.load() : 0u, int(composed));
             }
-            // On failure we simply present the original frame (fail-open). The semaphores are still
-            // consumed -- the capture submit waits on them before anything can fail -- so the flag
-            // stays set and the present below still drops them.
+            // On failure before the capture submit, leave the application's waits attached to the
+            // original present. Once our first submit accepted them they have been consumed.
         }
         if (TimeEnabled()) {
             static int frameNo = 0;

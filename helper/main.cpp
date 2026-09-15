@@ -400,9 +400,14 @@ static bool CreateContext(VkCtx& c) {
     VkPhysicalDeviceOpticalFlowFeaturesNV flowFeatures{};
     flowFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV;
     flowFeatures.opticalFlow = VK_TRUE;
+    VkPhysicalDeviceSynchronization2Features sync2Features{};
+    sync2Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+    sync2Features.synchronization2 = VK_TRUE;
+    if (c.opticalFlow && c.sync2) flowFeatures.pNext = &sync2Features;
     VkDeviceCreateInfo dci{};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.pNext = c.opticalFlow ? &flowFeatures : nullptr;
+    if (c.opticalFlow) dci.pNext = &flowFeatures;
+    else if (c.sync2) dci.pNext = &sync2Features;
     dci.queueCreateInfoCount = (uint32_t)qcis.size();
     dci.pQueueCreateInfos = qcis.data();
     dci.enabledExtensionCount = (uint32_t)enabled.size();
@@ -581,10 +586,17 @@ static bool CreateStaging(VkCtx& c, size_t bytes) {
         mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         mai.allocationSize = req.size;
         mai.memoryTypeIndex = FindHostMemoryType(c, req.memoryTypeBits, true);
-        if (mai.memoryTypeIndex == UINT32_MAX) return false;
+        if (mai.memoryTypeIndex == UINT32_MAX) {
+            destroy();
+            return false;
+        }
         if (vkAllocateMemory(c.device, &mai, nullptr, &mem) != VK_SUCCESS ||
-            vkBindBufferMemory(c.device, buf, mem, 0) != VK_SUCCESS) return false;
-        return vkMapMemory(c.device, mem, 0, VK_WHOLE_SIZE, 0, map) == VK_SUCCESS;
+            vkBindBufferMemory(c.device, buf, mem, 0) != VK_SUCCESS ||
+            vkMapMemory(c.device, mem, 0, VK_WHOLE_SIZE, 0, map) != VK_SUCCESS) {
+            destroy();
+            return false;
+        }
+        return true;
     };
 
     if (!make(c.uploadStaging, c.uploadMem, &c.uploadMap) ||
@@ -722,10 +734,7 @@ static bool CreateExportable(VkCtx& c, GpuImage& img, int& exportFd, uint32_t w,
     if (img.image && img.width == w && img.height == h && img.format == fmt && exportFd >= 0)
         return true;
     DestroyImage2D(c, img);
-    // The old descriptor is left open rather than closed: a Wine process cannot close a raw
-    // Linux fd through its CRT (the handle table does not own it), and the alternatives are
-    // either socket-only or version-fragile. Rebuilds are rare -- a resize, a header restart --
-    // so the leak is bounded long before it matters, and the kernel reclaims everything at exit.
+    if (exportFd >= 0) close(exportFd);
     exportFd = -1;
     if (!vkGetMemoryFdKHR || !w || !h) return false;
 
@@ -871,16 +880,26 @@ static bool CreateImage2DUsage(VkCtx& c, VkFormat fmt, uint32_t w, uint32_t h,
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = req.size;
     mai.memoryTypeIndex = FindMemoryType(c, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (mai.memoryTypeIndex == UINT32_MAX) return false;
-    if (vkAllocateMemory(c.device, &mai, nullptr, &out.memory) != VK_SUCCESS) return false;
-    if (vkBindImageMemory(c.device, out.image, out.memory, 0) != VK_SUCCESS) return false;
+    if (mai.memoryTypeIndex == UINT32_MAX) { DestroyImage2D(c, out); return false; }
+    if (vkAllocateMemory(c.device, &mai, nullptr, &out.memory) != VK_SUCCESS) {
+        DestroyImage2D(c, out);
+        return false;
+    }
+    if (vkBindImageMemory(c.device, out.image, out.memory, 0) != VK_SUCCESS) {
+        DestroyImage2D(c, out);
+        return false;
+    }
     VkImageViewCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image = out.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = fmt;
     vi.subresourceRange = { out.aspect(), 0, 1, 0, 1 };
-    return vkCreateImageView(c.device, &vi, nullptr, &out.view) == VK_SUCCESS;
+    if (vkCreateImageView(c.device, &vi, nullptr, &out.view) != VK_SUCCESS) {
+        DestroyImage2D(c, out);
+        return false;
+    }
+    return true;
 }
 
 static bool CreateImage2D(VkCtx& c, VkFormat fmt, uint32_t w, uint32_t h, GpuImage& out) {
@@ -922,16 +941,26 @@ static bool CreateImage2DOpticalFlow(VkCtx& c, VkFormat fmt, uint32_t w, uint32_
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = req.size;
     mai.memoryTypeIndex = FindMemoryType(c, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (mai.memoryTypeIndex == UINT32_MAX) return false;
-    if (vkAllocateMemory(c.device, &mai, nullptr, &out.memory) != VK_SUCCESS) return false;
-    if (vkBindImageMemory(c.device, out.image, out.memory, 0) != VK_SUCCESS) return false;
+    if (mai.memoryTypeIndex == UINT32_MAX) { DestroyImage2D(c, out); return false; }
+    if (vkAllocateMemory(c.device, &mai, nullptr, &out.memory) != VK_SUCCESS) {
+        DestroyImage2D(c, out);
+        return false;
+    }
+    if (vkBindImageMemory(c.device, out.image, out.memory, 0) != VK_SUCCESS) {
+        DestroyImage2D(c, out);
+        return false;
+    }
     VkImageViewCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vi.image = out.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = fmt;
     vi.subresourceRange = { out.aspect(), 0, 1, 0, 1 };
-    return vkCreateImageView(c.device, &vi, nullptr, &out.view) == VK_SUCCESS;
+    if (vkCreateImageView(c.device, &vi, nullptr, &out.view) != VK_SUCCESS) {
+        DestroyImage2D(c, out);
+        return false;
+    }
+    return true;
 }
 
 static void DestroyImage2D(VkCtx& c, GpuImage& img) {
@@ -1143,6 +1172,7 @@ struct OpticalFlowState {
     uint32_t grid = 1;
     uint32_t quality = kMVecBalanced;
     uint32_t attemptedQuality = 0;
+    uint32_t attemptedPixelSize = kMVecPixels4;
     bool userDisabled = false;
     bool hasPrev = false;
     bool currentToPrevious = true;
@@ -1219,6 +1249,7 @@ struct NeuralState {
     uint32_t mvecEnabled = 1;
     uint32_t mvecScaleMode = kMVecPixels;
     uint32_t mvecQuality = kMVecBalanced;
+    uint32_t mvecPixelSize = kMVecPixels4;
     uint32_t appliedMvecScaleMode = 0xFFFFFFFFu;
     std::vector<uint8_t> prevLuma;
     uint32_t lumaW = 0, lumaH = 0;
@@ -1256,19 +1287,33 @@ static uint32_t FlowGridBitsToFactor(VkOpticalFlowGridSizeFlagsNV bit) {
 }
 
 static VkOpticalFlowGridSizeFlagsNV ChooseFlowGrid(VkOpticalFlowGridSizeFlagsNV supported,
-                                                   uint32_t w, uint32_t h, uint32_t) {
+                                                   uint32_t w, uint32_t h, uint32_t requested) {
     const VkOpticalFlowGridSizeFlagsNV sizes[] = {
         VK_OPTICAL_FLOW_GRID_SIZE_4X4_BIT_NV,
         VK_OPTICAL_FLOW_GRID_SIZE_8X8_BIT_NV,
         VK_OPTICAL_FLOW_GRID_SIZE_2X2_BIT_NV,
         VK_OPTICAL_FLOW_GRID_SIZE_1X1_BIT_NV,
     };
+    const uint32_t wanted = 1u << requested;
     for (uint32_t i = 0; i < 4; ++i) {
         VkOpticalFlowGridSizeFlagsNV bit = sizes[i];
         uint32_t g = FlowGridBitsToFactor(bit);
-        if ((supported & bit) && g && (w % g) == 0 && (h % g) == 0) return bit;
+        if (g == wanted && (supported & bit) && (w % g) == 0 && (h % g) == 0) return bit;
     }
-    return VK_OPTICAL_FLOW_GRID_SIZE_UNKNOWN_NV;
+    VkOpticalFlowGridSizeFlagsNV fallback = VK_OPTICAL_FLOW_GRID_SIZE_UNKNOWN_NV;
+    uint32_t fallbackDistance = UINT32_MAX;
+    for (uint32_t i = 0; i < 4; ++i) {
+        VkOpticalFlowGridSizeFlagsNV bit = sizes[i];
+        uint32_t g = FlowGridBitsToFactor(bit);
+        if ((supported & bit) && g && (w % g) == 0 && (h % g) == 0) {
+            const uint32_t distance = g > wanted ? g - wanted : wanted - g;
+            if (distance < fallbackDistance) {
+                fallback = bit;
+                fallbackDistance = distance;
+            }
+        }
+    }
+    return fallback;
 }
 
 static bool QueryOpticalFlowFormat(VkCtx& c, VkOpticalFlowUsageFlagsNV usage,
@@ -1458,6 +1503,7 @@ static void DestroyOpticalFlow(VkCtx& c, OpticalFlowState& f) {
     f.grid = 1;
     f.quality = kMVecBalanced;
     f.attemptedQuality = 0;
+    f.attemptedPixelSize = kMVecPixels4;
     f.userDisabled = false;
     f.hasPrev = false;
     f.currentToPrevious = true;
@@ -1466,10 +1512,12 @@ static void DestroyOpticalFlow(VkCtx& c, OpticalFlowState& f) {
     f.loggedFirstFlow = false;
 }
 
-static bool SetupOpticalFlow(VkCtx& c, NeuralState& ns, uint32_t w, uint32_t h, uint32_t quality) {
+static bool SetupOpticalFlow(VkCtx& c, NeuralState& ns, uint32_t w, uint32_t h, uint32_t quality,
+                             uint32_t pixelSize) {
     OpticalFlowState& f = ns.flow;
     DestroyOpticalFlow(c, f);
     f.attemptedQuality = quality;
+    f.attemptedPixelSize = pixelSize;
     if (!c.opticalFlow || !c.opticalQueue || !c.cmdFlow || !vkCreateOpticalFlowSessionNV ||
         !vkBindOpticalFlowSessionImageNV || !vkCmdOpticalFlowExecuteNV ||
         !vkGetPhysicalDeviceOpticalFlowImageFormatsNV) {
@@ -1496,7 +1544,7 @@ static bool SetupOpticalFlow(VkCtx& c, NeuralState& ns, uint32_t w, uint32_t h, 
         }
     }
 
-    VkOpticalFlowGridSizeFlagsNV gridBit = ChooseFlowGrid(supported, w, h, quality);
+    VkOpticalFlowGridSizeFlagsNV gridBit = ChooseFlowGrid(supported, w, h, pixelSize);
     f.grid = FlowGridBitsToFactor(gridBit);
     f.quality = quality;
     if (!f.grid) { Log("[mvec] no supported flow grid for %ux%u", w, h); return false; }
@@ -2071,7 +2119,7 @@ static int ReactivateMotionVectors(NeuralState& ns, uint32_t w, uint32_t h, uint
     ns.lumaW = ns.lumaH = 0;
     ns.sceneCutStreak = 0;
     ns.lastResetLogged = 0xFFFFFFFFu;
-    if (!SetupOpticalFlow(ns.vk, ns, w, h, quality)) {
+    if (!SetupOpticalFlow(ns.vk, ns, w, h, quality, ns.mvecPixelSize)) {
         ns.flow.attemptedQuality = quality;
         ns.flow.userDisabled = false;
         Log("[mvec] reactivation setup failed, using zero MVec");
@@ -2553,6 +2601,7 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
     ns.mvecEnabled = ShmMVecEnabled(shm.hdr) ? 1u : 0u;
     ns.mvecScaleMode = ShmMVecScaleMode(shm.hdr);
     ns.mvecQuality = ShmMVecQuality(shm.hdr);
+    ns.mvecPixelSize = ShmMVecPixelSize(shm.hdr);
     const bool mvecJustDisabled = prevMvecEnabled && !ns.mvecEnabled;
     const bool mvecJustEnabled = !prevMvecEnabled && ns.mvecEnabled;
 
@@ -2594,7 +2643,7 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
     } else if (ns.mvecEnabled && !ns.firstFrame && !ns.flow.enabled &&
                (ns.flow.userDisabled || ns.flow.attemptedQuality != ns.mvecQuality)) {
         ns.flow.userDisabled = false;
-        if (!SetupOpticalFlow(ns.vk, ns, w, h, ns.mvecQuality)) {
+        if (!SetupOpticalFlow(ns.vk, ns, w, h, ns.mvecQuality, ns.mvecPixelSize)) {
             Log("[helper] estimated motion vectors unavailable");
         } else {
             ns.firstFrame = true;
@@ -2602,7 +2651,8 @@ static bool ProcessFrame(NeuralState& ns, ShmMap& shm) {
             ns.lastResetLogged = 0xFFFFFFFFu;
         }
     }
-    if (ns.flow.enabled && ns.flow.quality != ns.mvecQuality) {
+    if (ns.flow.enabled && (ns.flow.quality != ns.mvecQuality ||
+                            ns.flow.attemptedPixelSize != ns.mvecPixelSize)) {
         const int rc = ReactivateMotionVectors(ns, w, h, ns.mvecQuality);
         if (rc < 0) return false;
         if (rc == 0) Log("[helper] estimated motion vectors disabled after a quality change");
@@ -2936,7 +2986,8 @@ int main() {
     vkDeviceWaitIdle(ns.vk.device);
     DestroyImage2D(ns.vk, ns.vk.proxyIn);
     DestroyImage2D(ns.vk, ns.vk.answerOut);
-    // Export fds are left to the kernel at exit -- see CreateExportable.
+    if (ns.vk.proxyExportFd >= 0) close(ns.vk.proxyExportFd);
+    if (ns.vk.answerExportFd >= 0) close(ns.vk.answerExportFd);
     DestroyOpticalFlow(ns.vk, ns.flow);
     if (ns.vk.mvPipeLayout && vkDestroyPipelineLayout) vkDestroyPipelineLayout(ns.vk.device, ns.vk.mvPipeLayout, nullptr);
     if (ns.vk.mvDescLayout && vkDestroyDescriptorSetLayout) vkDestroyDescriptorSetLayout(ns.vk.device, ns.vk.mvDescLayout, nullptr);

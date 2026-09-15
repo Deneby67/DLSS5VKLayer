@@ -3,7 +3,7 @@ project('dlss5vklayer', 'cpp',
   default_options: [
     'cpp_std=c++17',
     'warning_level=3',
-    'optimization=2',
+    'optimization=3',
   ],
 )
 

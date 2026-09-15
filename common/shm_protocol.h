@@ -37,7 +37,7 @@ static constexpr uint32_t kShmMagic = 0x32524E47;
 // 64 KiB because VK_EXT_external_memory_host demands the imported pointer meet
 // minImportedHostPointerAlignment and NVIDIA answers 64 KiB, and the dma-buf exchange and HDR
 // and round-trip attribution. A stale mapping of either lineage must be re-created, not half-read.
-static constexpr uint32_t kShmVersion = 19;
+static constexpr uint32_t kShmVersion = 20;
 
 
 static constexpr uint32_t kMaxW = 7680, kMaxH = 4320;
@@ -172,6 +172,13 @@ enum MVecQuality : uint32_t {
     kMVecFast = 0,
     kMVecBalanced = 1,
     kMVecQuality = 2,
+};
+
+enum MVecPixelSize : uint32_t {
+    kMVecPixels1 = 0,
+    kMVecPixels2 = 1,
+    kMVecPixels4 = 2,
+    kMVecPixels8 = 3,
 };
 
 // Where the mapping lives.
@@ -524,6 +531,7 @@ struct ShmHeader {
     // SDR uses 8-bit ping-pong images by default. Enable 16-bit UNORM to avoid quantising between
     // passes at higher memory and bandwidth cost.
     std::atomic<uint32_t> sdr16Multipass;
+    std::atomic<uint32_t> mvecPixelSize;
 
 };
 
@@ -540,7 +548,7 @@ static_assert(sizeof(ShmHeader) <= kHeaderBytes, "ShmHeader outgrew its region")
 // The version check already existed to prevent exactly that; what was missing was anything to make
 // someone remember to use it. If these fire, the layout changed: bump kShmVersion in the same commit,
 // then update these numbers.
-static_assert(sizeof(ShmHeader) == 1964, "the header layout changed -- bump kShmVersion");
+static_assert(sizeof(ShmHeader) == 1968, "the header layout changed -- bump kShmVersion");
 
 static_assert(offsetof(ShmHeader, enabled) == 44, "layout changed -- bump kShmVersion");
 static_assert(offsetof(ShmHeader, transferStrengthBits) == 88, "layout changed -- bump kShmVersion");
@@ -700,6 +708,7 @@ inline void ShmInitDefaults(ShmHeader* h) {
     h->mvecEnabled.store(1);
     h->mvecScaleMode.store(kMVecPixels);
     h->mvecQuality.store(kMVecBalanced);
+    h->mvecPixelSize.store(kMVecPixels4);
     h->seq_ok.store(0);
     h->compositionBypass.store(1);
     h->rebuildSettleMs.store(250);
@@ -784,4 +793,9 @@ inline uint32_t ShmMVecScaleMode(const ShmHeader* h) {
 inline uint32_t ShmMVecQuality(const ShmHeader* h) {
     const uint32_t q = h->mvecQuality.load();
     return q <= kMVecQuality ? q : kMVecBalanced;
+}
+
+inline uint32_t ShmMVecPixelSize(const ShmHeader* h) {
+    const uint32_t size = h->mvecPixelSize.load();
+    return size <= kMVecPixels8 ? size : kMVecPixels4;
 }

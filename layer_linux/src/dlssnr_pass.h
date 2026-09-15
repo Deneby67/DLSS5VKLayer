@@ -34,6 +34,15 @@ class DlssNrPass : public Shader_Vk {
     VkDeviceSize _slotStride = 0;  // sizeof(DlssNrConstants), rounded up to the device's alignment
     uint32_t _slot = 0;            // next slot to hand out, wrapping
 
+    struct DescriptorState {
+        bool valid = false;
+        VkDeviceSize offset = 0;
+        VkImageView views[6]{};
+        VkImageLayout sourceLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImageLayout motionLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    };
+    DescriptorState _descriptorState[kSlots]{};
+
     // Stands in for a resource a given mode does not read. One pixel, never sampled for its content,
     // present only because Vulkan will not accept an unwritten binding.
     VkImage _dummyImage = VK_NULL_HANDLE;

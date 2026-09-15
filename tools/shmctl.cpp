@@ -61,6 +61,7 @@ const Setting kSettings[] = {
     { "mvec", &ShmHeader::mvecEnabled, false, "estimate motion vectors from the frames, 0 or 1" },
     { "mvecquality", &ShmHeader::mvecQuality, false, "0 fast, 1 balanced, 2 quality" },
     { "mvecunits", &ShmHeader::mvecScaleMode, false, "0 normalised, 1 pixels, 2 uv 0..1" },
+    { "mvecpixels", &ShmHeader::mvecPixelSize, false, "0 1px, 1 2px, 2 4px, 3 8px optical-flow grid" },
     { "debugview", &ShmHeader::debugView, false, "0 off, 1 proxy, 2 model, 3 amplified edit" },
     { "debugscale", &ShmHeader::debugScaleBits, true, "what the debug views are multiplied by" },
     { "whitepoint", &ShmHeader::whitePointBits, true, "paper white" },

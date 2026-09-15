@@ -1373,6 +1373,10 @@ binder->AddInt(f, "Passes", &ShmHeader::passes, 1, int(kMaxPasses),
                           "What the numbers in the field mean to the model.\n"
                           "Pixels is what the estimate produces; the others are for matching a model "
                           "that expects them.");
+        binder->AddChoice(f, "Motion pixel size", &ShmHeader::mvecPixelSize,
+                          { "1 px", "2 px", "4 px", "8 px" },
+                          "The optical-flow grid spacing in source-image pixels. Unsupported grids "
+                          "fall back to the nearest grid the GPU can use.");
     }
     {
         auto* f = group(col, "Input and precision");

@@ -276,7 +276,7 @@ bool Composition::MakeImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
             break;
         }
     }
-    if (type == UINT32_MAX) return false;
+    if (type == UINT32_MAX) { DropImage(img); return false; }
 
     VkMemoryAllocateInfo mai{};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -284,9 +284,13 @@ bool Composition::MakeImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     mai.memoryTypeIndex = type;
     if (_vk->vkAllocateMemory(_device, &mai, nullptr, &img.memory) != VK_SUCCESS) {
         Log("[comp] out of device memory for a %ux%u surface", w, h);
+        DropImage(img);
         return false;
     }
-    if (_vk->vkBindImageMemory(_device, img.image, img.memory, 0) != VK_SUCCESS) return false;
+    if (_vk->vkBindImageMemory(_device, img.image, img.memory, 0) != VK_SUCCESS) {
+        DropImage(img);
+        return false;
+    }
 
     VkImageViewCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -294,7 +298,10 @@ bool Composition::MakeImage(Image& img, uint32_t w, uint32_t h, VkFormat format,
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = format;
     vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    if (_vk->vkCreateImageView(_device, &vi, nullptr, &img.view) != VK_SUCCESS) return false;
+    if (_vk->vkCreateImageView(_device, &vi, nullptr, &img.view) != VK_SUCCESS) {
+        DropImage(img);
+        return false;
+    }
 
     img.format = format;
     img.width = w;
@@ -340,15 +347,21 @@ bool Composition::MakeHostBuffer(HostBuffer& buf, size_t bytes, VkBufferUsageFla
         if (f & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) score -= 50;
         if (score > bestScore) { bestScore = score; best = (int) i; }
     }
-    if (best < 0) return false;
+    if (best < 0) { DropHostBuffer(buf); return false; }
 
     VkMemoryAllocateInfo mai{};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = req.size;
     mai.memoryTypeIndex = uint32_t(best);
-    if (_vk->vkAllocateMemory(_device, &mai, nullptr, &buf.memory) != VK_SUCCESS) return false;
-    if (_vk->vkBindBufferMemory(_device, buf.buffer, buf.memory, 0) != VK_SUCCESS) return false;
-    if (_vk->vkMapMemory(_device, buf.memory, 0, VK_WHOLE_SIZE, 0, &buf.mapped) != VK_SUCCESS) return false;
+    if (_vk->vkAllocateMemory(_device, &mai, nullptr, &buf.memory) != VK_SUCCESS) {
+        DropHostBuffer(buf);
+        return false;
+    }
+    if (_vk->vkBindBufferMemory(_device, buf.buffer, buf.memory, 0) != VK_SUCCESS ||
+        _vk->vkMapMemory(_device, buf.memory, 0, VK_WHOLE_SIZE, 0, &buf.mapped) != VK_SUCCESS) {
+        DropHostBuffer(buf);
+        return false;
+    }
 
     buf.size = bytes;
     return true;
@@ -902,7 +915,7 @@ bool Composition::Prepare(uint32_t width, uint32_t height, VkFormat swapchainFor
 // attempt gets its own duplicate of the descriptor, because a failed import may or may not have
 // consumed the fd depending on the driver. The winner keeps its duplicate, the losers close
 // theirs, and the caller closes the original either way.
-bool Composition::ImportFdMemory(int fd, const VkMemoryRequirements& req, VkDeviceMemory* out) {
+bool Composition::ImportFdMemory(int fd, VkImage image, const VkMemoryRequirements& req, VkDeviceMemory* out) {
     for (uint32_t type = 0; type < 32; ++type) {
         if (!(req.memoryTypeBits & (1u << type))) continue;
         const int dup = fcntl(fd, F_DUPFD_CLOEXEC, 0);
@@ -916,7 +929,11 @@ bool Composition::ImportFdMemory(int fd, const VkMemoryRequirements& req, VkDevi
         mai.pNext = &imp;
         mai.allocationSize = req.size;
         mai.memoryTypeIndex = type;
-        if (_vk->vkAllocateMemory(_device, &mai, nullptr, out) == VK_SUCCESS) return true;
+        if (_vk->vkAllocateMemory(_device, &mai, nullptr, out) == VK_SUCCESS) {
+            if (_vk->vkBindImageMemory(_device, image, *out, 0) == VK_SUCCESS) return true;
+            _vk->vkFreeMemory(_device, *out, nullptr);
+            *out = VK_NULL_HANDLE;
+        }
         close(dup);
     }
     return false;
@@ -950,7 +967,10 @@ bool Composition::ImportProxy(int fd, uint32_t w, uint32_t h) {
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                VK_IMAGE_USAGE_SAMPLED_BIT;
-    ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    // Imported memory is shared between processes, not between queue families on this device.
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.queueFamilyIndexCount = 0;
+    ci.pQueueFamilyIndices = nullptr;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (_vk->vkCreateImage(_device, &ci, nullptr, &_proxyXfer.image) != VK_SUCCESS) {
         close(fd);
@@ -962,7 +982,7 @@ bool Composition::ImportProxy(int fd, uint32_t w, uint32_t h) {
 
     VkMemoryRequirements req{};
     _vk->vkGetImageMemoryRequirements(_device, _proxyXfer.image, &req);
-    if (!ImportFdMemory(fd, req, &_proxyXfer.memory)) {
+    if (!ImportFdMemory(fd, _proxyXfer.image, req, &_proxyXfer.memory)) {
         DropImage(_proxyXfer);
         close(fd);
         return false;
@@ -1009,7 +1029,9 @@ bool Composition::ImportAnswerFd(int fd, uint32_t w, uint32_t h) {
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.queueFamilyIndexCount = 0;
+    ci.pQueueFamilyIndices = nullptr;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (_vk->vkCreateImage(_device, &ci, nullptr, &_answerXfer.image) != VK_SUCCESS) {
         close(fd);
@@ -1021,7 +1043,7 @@ bool Composition::ImportAnswerFd(int fd, uint32_t w, uint32_t h) {
 
     VkMemoryRequirements req{};
     _vk->vkGetImageMemoryRequirements(_device, _answerXfer.image, &req);
-    if (!ImportFdMemory(fd, req, &_answerXfer.memory)) {
+    if (!ImportFdMemory(fd, _answerXfer.image, req, &_answerXfer.memory)) {
         DropImage(_answerXfer);
         close(fd);
         return false;
@@ -1066,9 +1088,20 @@ void Composition::TransitionSwapchain(VkCommandBuffer cb, VkImage image, VkImage
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
     b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    b.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    _vk->vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
+    VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    if (from == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR && to == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        b.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        srcStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (from == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && to == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dstStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    }
+    _vk->vkCmdPipelineBarrier(cb, srcStage, dstStage, 0, 0,
                               nullptr, 0, nullptr, 1, &b);
 }
 

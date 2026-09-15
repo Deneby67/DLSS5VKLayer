@@ -103,7 +103,11 @@ bool Shader_Vk::CreateBufferResource(VkBuffer* buffer, VkDeviceMemory* memory, V
     _vk->vkGetBufferMemoryRequirements(_device, *buffer, &memRequirements);
 
     const uint32_t type = FindMemoryType(memRequirements.memoryTypeBits, properties);
-    if (type == UINT32_MAX) return false;
+    if (type == UINT32_MAX) {
+        _vk->vkDestroyBuffer(_device, *buffer, nullptr);
+        *buffer = VK_NULL_HANDLE;
+        return false;
+    }
 
     VkMemoryAllocateInfo allocInfo {};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -112,10 +116,19 @@ bool Shader_Vk::CreateBufferResource(VkBuffer* buffer, VkDeviceMemory* memory, V
 
     if (_vk->vkAllocateMemory(_device, &allocInfo, nullptr, memory) != VK_SUCCESS) {
         Log("[%s] vkAllocateMemory failed (%llu bytes)", _name.c_str(), (unsigned long long) memRequirements.size);
+        _vk->vkDestroyBuffer(_device, *buffer, nullptr);
+        *buffer = VK_NULL_HANDLE;
         return false;
     }
 
-    return _vk->vkBindBufferMemory(_device, *buffer, *memory, 0) == VK_SUCCESS;
+    if (_vk->vkBindBufferMemory(_device, *buffer, *memory, 0) != VK_SUCCESS) {
+        _vk->vkDestroyBuffer(_device, *buffer, nullptr);
+        _vk->vkFreeMemory(_device, *memory, nullptr);
+        *buffer = VK_NULL_HANDLE;
+        *memory = VK_NULL_HANDLE;
+        return false;
+    }
+    return true;
 }
 
 VkDescriptorSetLayoutBinding Shader_Vk::CreateBinding(uint32_t binding, VkDescriptorType descriptorType,

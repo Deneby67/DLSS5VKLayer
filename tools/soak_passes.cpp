@@ -40,13 +40,13 @@ int main(int argc, char** argv) {
     if (const char* e = getenv("DLSSNR_SHM"); e && *e) path = e;
     int fd = open(path.c_str(), O_RDWR | O_CREAT, 0600);
     if (fd < 0) { printf("[soak] open %s failed\n", path.c_str()); return 1; }
-    size_t total = 4096 + kMaxFrame * 2;
+    size_t total = ShmTotalBytes();
     struct stat st{};
     if (fstat(fd, &st) != 0 || (size_t)st.st_size < total) ftruncate(fd, (off_t)total);
     void* m = mmap(nullptr, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (m == MAP_FAILED) { printf("[soak] mmap failed\n", 0); return 1; }
     ShmHeader* hdr = (ShmHeader*)m;
-    uint8_t* inPx = (uint8_t*)m + 4096;
+    uint8_t* inPx = (uint8_t*)m + kHeaderBytes;
     if (hdr->magic.load() != kShmMagic || hdr->version.load() != kShmVersion ||
         hdr->passes.load() == 0) ShmInitDefaults(hdr);
     hdr->quit.store(0);

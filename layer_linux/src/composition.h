@@ -233,7 +233,7 @@ class Composition {
 
     bool MakeImage(Image& img, uint32_t w, uint32_t h, VkFormat format, VkImageUsageFlags usage);
     void DropImage(Image& img);
-    bool ImportFdMemory(int fd, const VkMemoryRequirements& req, VkDeviceMemory* out);
+    bool ImportFdMemory(int fd, VkImage image, const VkMemoryRequirements& req, VkDeviceMemory* out);
     bool MakeHostBuffer(HostBuffer& buf, size_t bytes, VkBufferUsageFlags usage);
     bool MakeTransportBuffer(HostBuffer& buf, size_t bytes, VkBufferUsageFlags usage, void* hostPtr);
     void DropHostBuffer(HostBuffer& buf);

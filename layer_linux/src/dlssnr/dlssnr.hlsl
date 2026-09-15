@@ -828,6 +828,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // this pass has always been encoding neighbours, never fetching them.
     float gainSharp = 1.0;
     float gainSmooth = 1.0;
+    // These taps are only consumed by ratio smoothing and native-plus-edit transfer.
+    if (gRatioSmooth > 0.0 || gTransfer == 2)
     {
         const float kGainFloor = 1.0 / 512.0;
         const float2 texel = 1.0 / float2(gWidth, gHeight);

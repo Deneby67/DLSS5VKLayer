@@ -50,6 +50,14 @@ class ScalerVk : public Shader_Vk {
     uint32_t _filter = kScalerLanczos3;
     VkDeviceSize _slotStride = 0;
     uint32_t _slot = 0;
+    struct DescriptorState {
+        bool valid = false;
+        VkDeviceSize offset = 0;
+        VkImageView source = VK_NULL_HANDLE;
+        VkImageView dest = VK_NULL_HANDLE;
+        int32_t srcWidth = 0, srcHeight = 0, destWidth = 0, destHeight = 0;
+    };
+    DescriptorState _descriptorState[kSlots]{};
 
   public:
     ScalerVk(const DeviceTable* InVk, const InstanceTable* InInstance, VkDevice InDevice,

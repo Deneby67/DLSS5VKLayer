@@ -125,6 +125,19 @@ bool ScalerVk::Dispatch(VkCommandBuffer cb, VkImageView source, VkImageView dest
     std::memcpy((char*) _mappedConstantBuffer + offset, &c, sizeof(c));
 
     VkDescriptorSet set = _descriptorSets[slot];
+    DescriptorState& state = _descriptorState[slot];
+    const bool same = state.valid && state.offset == offset && state.source == source && state.dest == dest &&
+                      state.srcWidth == c.srcWidth && state.srcHeight == c.srcHeight &&
+                      state.destWidth == c.destWidth && state.destHeight == c.destHeight;
+    if (!same) {
+        state.valid = true;
+        state.offset = offset;
+        state.source = source;
+        state.dest = dest;
+        state.srcWidth = c.srcWidth;
+        state.srcHeight = c.srcHeight;
+        state.destWidth = c.destWidth;
+        state.destHeight = c.destHeight;
     VkDescriptorBufferInfo bufferInfo{ _constantBuffer, offset, sizeof(ScalerConstants) };
     VkDescriptorImageInfo sourceInfo{ VK_NULL_HANDLE, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkDescriptorImageInfo destInfo{ VK_NULL_HANDLE, dest, VK_IMAGE_LAYOUT_GENERAL };
@@ -141,6 +154,7 @@ bool ScalerVk::Dispatch(VkCommandBuffer cb, VkImageView source, VkImageView dest
           nullptr, nullptr },
     };
     _vk->vkUpdateDescriptorSets(_device, uint32_t(sizeof(writes) / sizeof(writes[0])), writes, 0, nullptr);
+    }
 
     _vk->vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, _pipeline);
     _vk->vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, _pipelineLayout, 0, 1, &set, 0, nullptr);
