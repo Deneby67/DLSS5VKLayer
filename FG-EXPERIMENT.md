@@ -265,9 +265,15 @@ not a verified camera profile or proof of shader consumption.
 
 Only existing HOST_VISIBLE + HOST_COHERENT mappings are read. The address accounts
 for allocation binding offset, descriptor offset and mapping offset; allocation,
-buffer and set generations prevent reuse of stale handles. Reads use a self
-`process_vm_readv` call so unreadable mappings produce a skipped sample rather
-than a process fault. Noncoherent/unmapped/out-of-range memory is skipped. No
+buffer and set generations prevent reuse of stale handles. Reads first use a
+self `process_vm_readv` call. NVIDIA HOST_VISIBLE + DEVICE_LOCAL mappings may
+reject that call with EFAULT, so a failed/short read falls back to a private
+nonblocking pipe: a bounded write copies the source through kernel
+`copy_from_user`, then a read retrieves the bytes. This does not pin device
+pages, directly dereference the source or install signal handlers. The pipe
+is emptied after each successful read and discarded on any short/error result.
+Unreadable mappings produce a skipped sample rather than a process fault.
+Noncoherent/unmapped/out-of-range memory is skipped. No
 memory is newly mapped, flushed or invalidated and no GPU commands or waits are
 added. The probe records bytes before the application's queue submission and
 records the submission result separately. GPU writes, concurrent host writes,
@@ -283,6 +289,9 @@ legacy bindings are recorded as historical references within a command buffer,
 not as a full draw-state reconstruction. Tracking errors disable only the probe.
 A device supports at most 500,000 tracked objects and 262,144 command/set
 references. Output is capped at 8 MiB per request, 1,024 samples and 30 seconds.
+At most 128 candidate reads are attempted per sampling interval; unsuccessful
+reads also advance the 100 ms throttle. Each snapshot records its read method
+and the original syscall errno; failed reads retain both error codes.
 
 The `camera/support-DEVICE.json` files identify capable devices in the session.
 No buffer contents are written without an explicit request:
@@ -304,14 +313,28 @@ previous SPIR-V inspection and retains `camera_verified=false`.
 Validation covers exact sampled bytes with nonzero memory-binding, mapping and
 descriptor offsets, primary/secondary commands, QueueSubmit/QueueSubmit2, unmap,
 command-pool reset and operation after the overall inventory log fills. A separate
-state test covers reuse of memory/buffer/set handles, invalid pointers,
+state test covers reuse of memory/buffer/set handles, invalid pointers, a real
+partially inaccessible guarded mapping, recovery after read failures,
 noncoherent mappings and partial mapping bounds. The command-dispatch fallback
-is also exercised with an unwritable discovery directory. The unit test needs
-self-process memory-read permission (some execution sandboxes deny this syscall):
+is also exercised with an unwritable discovery directory. The pipe fallback
+also permits this test in sandboxes denying the self-process read syscall:
 
 ```sh
 build/discovery/camera-state-test /private/new-empty-test-directory
 ```
+
+The first RDR2 gameplay window completed but returned zero samples and 183,446
+CPU mapping read failures. The old log did not record errno, so the exact game
+failure cannot be established from it. An isolated reproduction on the RTX 5090,
+both on the host and inside SteamLinuxRuntime_4, found that memory type 4
+(HOST_VISIBLE | HOST_COHERENT | DEVICE_LOCAL) returns EFAULT from
+`process_vm_readv`, while ordinary host-visible types 2/3 succeed. All types
+return the expected 464 bytes through the pipe reader. See
+`test_layer/mapping_read_probe.cpp` for the standalone owned-allocation test.
+The full capture regression now runs on both ordinary and device-local coherent
+allocations, checking exact bytes, Vulkan validation and failure recovery.
+This fixes the independently reproduced reader limitation; a new gameplay
+window is still needed to verify RDR2 camera values and their meaning.
 
 `DLSSFG_METADATA_LIMIT_MIB=1..64` can lower the inventory limit for this regression
 (default 64). It does not disable the separate camera probe. Real RDR2 snapshots

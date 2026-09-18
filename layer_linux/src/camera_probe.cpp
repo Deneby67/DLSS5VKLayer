@@ -1,4 +1,5 @@
 #include "camera_probe.h"
+#include "cpu_snapshot_reader.h"
 #include "../../third_party/nlohmann/json.hpp"
 #include <algorithm>
 #include <array>
@@ -40,6 +41,8 @@ struct CameraProbe::Impl {
     int output=-1;
     Clock::time_point nextPoll{},deadline{},nextSample{};
     std::map<std::string,uint64_t> misses;
+    CpuSnapshotReader reader;
+    CpuSnapshotReader::Result lastRead;
     static constexpr size_t SliceBytes=464, ObjectLimit=500000, CommandRefLimit=8192;
     Impl(const std::filesystem::path& dir,uint64_t id,const VkPhysicalDeviceMemoryProperties& props):properties(props),directory(dir/"camera"),deviceId(id) {
         std::filesystem::create_directory(directory); chmod(directory.c_str(),0700);
@@ -111,10 +114,13 @@ struct CameraProbe::Impl {
         auto offset=b.offset+slice.offset;
         if(offset<m.offset || offset-m.offset>m.length || SliceBytes>m.length-(offset-m.offset)) {reason="outside mapped range";return false;}
         if(offset-m.offset>UINTPTR_MAX-m.pointer) {reason="pointer overflow";return false;}
-        iovec local{out.data(),out.size()},remote{reinterpret_cast<void*>(m.pointer+uintptr_t(offset-m.offset)),out.size()};
-        // A fault/partially unreadable mapping must not raise a signal in the game.
-        auto n=process_vm_readv(getpid(),&local,1,&remote,1,0);
-        if(n!=ssize_t(out.size())) {reason="CPU mapping read failed";return false;}
+        auto address=m.pointer+uintptr_t(offset-m.offset);
+        if(out.size()-1>UINTPTR_MAX-address){reason="pointer overflow";return false;}
+        lastRead=reader.read(reinterpret_cast<void*>(address),out.data(),out.size());
+        if(!lastRead.ok) {
+            ++misses["CPU read errno="+std::to_string(lastRead.error)+", vm errno="+std::to_string(lastRead.vmError)];
+            reason="CPU mapping read failed";return false;
+        }
         return true;
     }
 };
@@ -182,13 +188,14 @@ uint64_t CameraProbe::submit(VkQueue queue,uint32_t count,const VkCommandBuffer*
     ++p->submissions;p->poll();auto now=Clock::now();if(p->output<0 || now<p->nextSample)return 0;
     std::set<uint64_t> visited;std::set<Impl::SetRef> refs;
     for(uint32_t i=0;i<count;++i)p->collect(h(commands[i]),0,visited,refs);
-    unsigned recorded=0;std::set<std::array<uint8_t,Impl::SliceBytes>> unique;
+    unsigned recorded=0,attempted=0;std::set<std::array<uint8_t,Impl::SliceBytes>> unique;
     for(const auto& ref:refs) {
         if(ref.index!=0)continue;
         auto it=p->sets.find(ref.handle);if(it==p->sets.end() || it->second.gen!=ref.gen){++p->misses["stale descriptor set"];continue;}
         if(it->second.slices.empty())++p->misses["bound set has no supported 464-byte slice"];
         for(auto kv:it->second.slices) {
-            if(recorded>=8 || p->sampleCount>=p->sampleLimit)break;
+            if(recorded>=8 || attempted>=128 || p->sampleCount>=p->sampleLimit)break;
+            ++attempted;
             std::array<uint8_t,Impl::SliceBytes> data{};std::string reason;
             if(!p->readSlice(kv.second,data,reason)){++p->misses[reason];continue;}
             if(!unique.insert(data).second)continue;
@@ -197,13 +204,15 @@ uint64_t CameraProbe::submit(VkQueue queue,uint32_t count,const VkCommandBuffer*
                 {"sample",++p->sampleCount},{"buffer",kv.second.buffer},{"buffer_generation",kv.second.bufferGen},
                 {"offset",kv.second.offset},{"set",ref.handle},{"binding",kv.first},{"descriptor_range",kv.second.range},
                 {"bytes_hex",hex},{"camera_verified",false},{"gpu_completion_verified",false},
+                {"read_method",p->lastRead.usedPipe?"pipe_copy_from_user":"process_vm_readv"},
+                {"vm_read_errno",p->lastRead.vmError},
                 {"monotonic_ns",std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count()}});
             ++recorded;
         }
-        if(recorded>=8 || p->sampleCount>=p->sampleLimit)break;
+        if(recorded>=8 || attempted>=128 || p->sampleCount>=p->sampleLimit)break;
     }
     if(refs.empty())++p->misses["no tracked bound sets in sampled submission"];
-    if(recorded)p->nextSample=now+std::chrono::milliseconds(100);
+    if(attempted)p->nextSample=now+std::chrono::milliseconds(100);
     return recorded?p->submissions:0;
 }
 void CameraProbe::result(uint64_t id,VkResult result) {if(id && p->output>=0)p->emit({{"event","submission_result"},{"submission",id},{"result",result}});}

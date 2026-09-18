@@ -9,7 +9,9 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};bi.size=4096;bi.usage=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     VkBuffer buffer{};OK(vkCreateBuffer(d,&bi,nullptr,&buffer));VkMemoryRequirements req{};vkGetBufferMemoryRequirements(d,buffer,&req);
     uint32_t type=0;
-    for(;type<props.memoryTypeCount;++type) if((req.memoryTypeBits&(1u<<type)) && (props.memoryTypes[type].propertyFlags&(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))==(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))break;
+    auto required=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    if(std::getenv("DLSSFG_TEST_DEVICE_LOCAL_CAMERA"))required|=VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    for(;type<props.memoryTypeCount;++type) if((req.memoryTypeBits&(1u<<type)) && (props.memoryTypes[type].propertyFlags&required)==required)break;
     if(type==props.memoryTypeCount)std::exit(10);
     const VkDeviceSize bindOffset=std::max<VkDeviceSize>(req.alignment,4096),mapOffset=bindOffset/2,descriptorOffset=256;
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};ai.allocationSize=req.size+bindOffset;ai.memoryTypeIndex=type;

@@ -1,4 +1,5 @@
 #include "../layer_linux/src/camera_probe.h"
+#include "../layer_linux/src/cpu_snapshot_reader.h"
 #include "../third_party/nlohmann/json.hpp"
 #include <array>
 #include <chrono>
@@ -8,9 +9,23 @@
 #include <cassert>
 #include <iostream>
 #include <unistd.h>
+#include <sys/mman.h>
 using namespace dlssfg;
 template<class T> T fake(uintptr_t p){return reinterpret_cast<T>(p);}
 int main(int argc,char** argv) {
+    {
+        CpuSnapshotReader reader;std::array<unsigned char,464> input{},output{};input.fill(73);
+        auto page=sysconf(_SC_PAGESIZE);assert(page>=464);
+        auto mapping=static_cast<unsigned char*>(mmap(nullptr,page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
+        assert(mapping!=MAP_FAILED);memset(mapping,9,page);assert(mprotect(mapping+page,page,PROT_NONE)==0);
+        for(int i=0;i<16;++i){
+            auto bad=reader.read(reinterpret_cast<void*>(1),output.data(),output.size());assert(!bad.ok && bad.error==EFAULT);
+            auto partial=reader.read(mapping+page-232,output.data(),output.size());assert(!partial.ok && partial.error==EFAULT);
+            auto good=reader.read(input.data(),output.data(),output.size());assert(good.ok && output==input);
+        }
+        assert(munmap(mapping,page*2)==0);
+        std::cout<<"PASS: guarded partial mapping, invalid address and reader recovery\n";
+    }
     assert(argc==2);std::filesystem::path root=argv[1];std::filesystem::create_directories(root);
     VkPhysicalDeviceMemoryProperties props{};props.memoryTypeCount=2;props.memoryTypes[0].propertyFlags=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;props.memoryTypes[1].propertyFlags=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
     CameraProbe p(root,1,props);auto buffer=fake<VkBuffer>(1);auto memory=fake<VkDeviceMemory>(2);auto set=fake<VkDescriptorSet>(3);auto pool=fake<VkDescriptorPool>(4);auto command=fake<VkCommandBuffer>(5);auto cp=fake<VkCommandPool>(6);auto queue=fake<VkQueue>(7);

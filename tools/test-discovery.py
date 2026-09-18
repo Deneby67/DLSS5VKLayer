@@ -87,17 +87,21 @@ with tempfile.TemporaryDirectory(prefix='fg-discovery-test-') as tmp:
     assert len(analysis.analyze(capped)['shader_binaries_omitted'])==1
     env.pop('DLSSFG_SHADER_LIMIT_MIB',None)
     env['DLSSFG_METADATA_LIMIT_MIB']='1'
-    run('RDR2.exe',root/'camera','camera')
-    camera=next((root/'camera').iterdir())
-    assert (camera/'stopped.txt').read_text()=='metadata limit reached'
-    rows=[json.loads(x) for x in next((camera/'camera').glob('samples-*.jsonl')).read_text().splitlines()]
-    samples=[r for r in rows if r['event']=='cpu_snapshot_before_submit']
-    assert len(samples)==3, len(samples)
-    for base,s in zip([1,2,3],samples):
-        assert bytes.fromhex(s['bytes_hex'])==struct.pack('<116f',*(base+i*.25 for i in range(116)))
-        assert s['offset']==256 and s['binding']==29 and not s['gpu_completion_verified'] and not s['camera_verified']
-        assert any(r['event']=='submission_result' and r['submission']==s['submission'] and r['result']==0 for r in rows)
-    assert rows[-1]['event']=='end' and rows[-1]['samples']==3
-    assert rows[-1]['misses']['memory not mapped']>=1
-    assert rows[-1]['misses']['no tracked bound sets in sampled submission']>=1
+    for camera_name in ('camera','camera-device-local'):
+        if camera_name=='camera-device-local':env['DLSSFG_TEST_DEVICE_LOCAL_CAMERA']='1'
+        else:env.pop('DLSSFG_TEST_DEVICE_LOCAL_CAMERA',None)
+        run('RDR2.exe',root/camera_name,'camera')
+        camera=next((root/camera_name).iterdir())
+        assert (camera/'stopped.txt').read_text()=='metadata limit reached'
+        rows=[json.loads(x) for x in next((camera/'camera').glob('samples-*.jsonl')).read_text().splitlines()]
+        samples=[r for r in rows if r['event']=='cpu_snapshot_before_submit']
+        assert len(samples)==3, len(samples)
+        assert all(s['read_method'] in ('process_vm_readv','pipe_copy_from_user') for s in samples)
+        for base,s in zip([1,2,3],samples):
+            assert bytes.fromhex(s['bytes_hex'])==struct.pack('<116f',*(base+i*.25 for i in range(116)))
+            assert s['offset']==256 and s['binding']==29 and not s['gpu_completion_verified'] and not s['camera_verified']
+            assert any(r['event']=='submission_result' and r['submission']==s['submission'] and r['result']==0 for r in rows)
+        assert rows[-1]['event']=='end' and rows[-1]['samples']==3
+        assert rows[-1]['misses']['memory not mapped']>=1
+        assert rows[-1]['misses']['no tracked bound sets in sampled submission']>=1
 print('PASS: process scope, disabled mode, I/O failure fallback, hashes/dedup, resource generations, log cap')
