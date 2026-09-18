@@ -224,3 +224,30 @@ not confirmed camera data**. Shader debug names are absent. The analyzer now gro
 these structural candidates and reports omitted binaries explicitly. It still
 never enables a game profile, and no motion resource or gameplay buffer contents
 have been verified. Private captures/reports are excluded from the repository.
+
+#### Relating the second inventory
+
+The revised recorder continued through CPU present marker 3843, recording about
+14,000 images and 2,900 graphics pipelines before its overall 64 MiB log limit.
+Descriptor logging had reached its separate budget at marker 1196. These markers
+are not evidence of a particular gameplay scene or GPU completion.
+
+`tools/relate-discovery.py` joins shader layouts, pipeline layouts, descriptor
+writes and image/buffer generations. It requires exact recorded set-layout
+identity, leaves descriptor copies unresolved and does not treat a descriptor
+write or framebuffer creation as proof of execution. It reports candidates only.
+
+```sh
+python3 tools/relate-discovery.py /private/session \
+  --report /private/report.json --output /private/resource-links.json
+python3 tools/test-relate-discovery.py
+```
+
+The RDR2 inventory contains 464-byte uniform-buffer slices associated with the
+seven-matrix layout at vertex-stage set 0/binding 29 (another variant uses binding
+31). Their offsets change within a 128 MiB buffer. The profile therefore needs
+descriptor-relative selection rather than a fixed process/buffer address.
+Render-size RG16F images also appear, but the recorded descriptor window has no
+confirmed link identifying one of them as the motion field. Actual buffer values,
+draw/submission state and GPU resource readback still need to be captured and
+validated before any camera/depth/motion profile can be enabled.
