@@ -8,6 +8,7 @@
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
+#include "discovery.h"
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
 
@@ -944,6 +945,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(
         }
     }
 
+    dlssfg::discovery::Register(*pDevice,next_dpa);
     std::lock_guard<std::mutex> lk(g_stateMutex);
     g_devices[*pDevice] = dc;
     Log("[layer] vkCreateDevice -> %p on %s (inert=%d enabled=%d)", (void*)*pDevice, deviceName,
@@ -1182,6 +1184,7 @@ static VKAPI_ATTR void VKAPI_CALL Hook_DestroyDevice(VkDevice device,
         }
         dc->swapchains.clear();
     }
+    dlssfg::discovery::Remove(device);
     if (dc->vkDestroyDevice) dc->vkDestroyDevice(device, pAllocator);
     delete dc;
 }
@@ -1665,6 +1668,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueuePresentKHR(VkQueue queue,
         }
     }
     if (!dc || !dc->vkQueuePresentKHR) return VK_ERROR_INITIALIZATION_FAILED;
+    dlssfg::discovery::Present(dc->self,pPresentInfo);
     dc->lastPresentMs.store(NowMs(), std::memory_order_relaxed);
 
     // Whether this call's wait semaphores have already been consumed by a submit of ours. They are
@@ -1801,6 +1805,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, 
 // ---------------------------------------------------------------------------
 // Loader entry points
 // ---------------------------------------------------------------------------
+static PFN_vkVoidFunction VKAPI_CALL DiscoveryNext(VkDevice device,const char* name) {
+    auto* dc=FindDevice(device);
+    return dc && dc->next_dpa ? dc->next_dpa(device,name) : nullptr;
+}
 static PFN_vkVoidFunction LookupHook(const char* n) {
     if (!std::strcmp(n, "vkCreateInstance")) return (PFN_vkVoidFunction)Hook_CreateInstance;
     if (!std::strcmp(n, "vkDestroyInstance")) return (PFN_vkVoidFunction)Hook_DestroyInstance;
@@ -1894,6 +1902,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instan
     if (!std::strcmp(pName, "vkEnumerateInstanceExtensionProperties"))
         return (PFN_vkVoidFunction)vkEnumerateInstanceExtensionProperties;
     if (auto fn = LookupHook(pName)) return fn;
+    if (instance) if (auto fn=dlssfg::discovery::Lookup(pName,DiscoveryNext)) return fn;
     if (instance) {
         std::lock_guard<std::mutex> lk(g_stateMutex);
         auto it = g_instances.find(instance);
@@ -1906,6 +1915,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, co
     if (!pName) return nullptr;
     if (!std::strcmp(pName, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
     if (auto fn = LookupDeviceHook(pName)) return fn;
+    if (device) if (auto fn=dlssfg::discovery::Lookup(pName,DiscoveryNext)) return fn;
     if (device) {
         std::lock_guard<std::mutex> lk(g_stateMutex);
         auto it = g_devices.find(device);

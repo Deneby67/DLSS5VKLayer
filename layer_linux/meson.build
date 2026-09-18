@@ -1,5 +1,6 @@
 layer_sources = files(
   'src/layer.cpp',
+  'src/discovery.cpp',
   'src/shader_vk.cpp',
   'src/dlssnr_pass.cpp',
   'src/composition.cpp',

@@ -132,3 +132,70 @@ python3 tools/install-capture-gate.py --backend /path/to/renderdoc/lib/librender
 The installer expects an already-registered per-user RenderDoc manifest, backs
 it up, replaces its entry points with the gate, and installs the inactive Steam
 wrapper. Source and runtime binary are kept separate; RenderDoc is not vendored.
+
+### RDR2 metadata discovery without RenderDoc
+
+The native layer now has an opt-in metadata recorder, scoped to the exact
+`RDR2.exe` process basename. It records shader modules (SPIR-V plus SHA-256),
+image/view/buffer descriptions, descriptor/pipeline layouts, graphics/compute
+pipeline shader associations, descriptor writes/copies and object lifetimes.
+Descriptor pool reset/destruction invalidates the recorded set generations.
+Present markers are **CPU observations, not GPU completion or frame identity**.
+The Rockstar renderer exclusion is retained.
+
+This is an inventory stage, **not engine depth/motion/camera capture or game FG**.
+No command recording, resource contents, barriers or submissions are intercepted
+by this recorder. RenderPass2, dynamic rendering, descriptor update templates,
+shader objects and inline shader modules are not covered. Partial pipeline
+creation failures are not recorded. The session header declares these gaps.
+The recorder adds no GPU commands, waits, usage flags or synchronization, but
+synchronous metadata/shader writes can slow loading and rendering while active.
+Do not use this diagnostic run for performance comparisons.
+
+Per process, JSONL is limited to 64 MiB, shader files to 128 MiB and live tracked
+objects to 500,000. Reaching a limit stops recording; ordinary Vulkan dispatch
+continues. An unwritable directory or absent `libcrypto.so.3` disables discovery
+without preventing device/resource creation, including hooks cached before the
+device existed. Captures use private directories/files and are not published.
+
+Build the native layer with up to 24 jobs, then run the isolated GPU test:
+
+```sh
+CXX=/path/to/clang++ bash tools/build-discovery.sh
+python3 tools/test-discovery.py \
+  --layer build/discovery/libVkLayer_NV_dlssnr.so \
+  --probe build/discovery/discovery-probe \
+  --validation /path/to/VkLayer_khronos_validation.json
+python3 tools/install-discovery.py --layer build/discovery/libVkLayer_NV_dlssnr.so
+```
+
+Validation manifests must reference an absolute library path. Tests exercise real
+Vulkan shader/pipeline/resource creation, descriptor reset/free and generations,
+concurrent lifetimes, independently checked SHA-256/deduplication, excluded
+process names, absent output directory, disabled capture and log-limit fallback.
+The analyzer also rejects corrupted shader files. The test checks that the
+validation library is actually mapped when requested.
+
+The installer requires the existing per-user layer manifest and Steam wrapper.
+It installs a separate library at `~/.local/lib/dlssnr-fg/layer`, backs up the
+manifest, wrapper, diagnostic marker and previous library, and supplies a
+`restore.py`. Selection uses atomic file replacement; a running game retains
+its old mapping. The normal Steam wrapper enables metadata discovery when
+`~/.config/dlssnr/fg-discovery.enabled` exists. `DLSSFG_DISCOVERY=0` or removing
+the marker disables it. RenderDoc remains disabled by default. The helper,
+Stable Proton, NR parameters and game settings are unchanged.
+
+After restarting RDR2 through Steam, sessions appear under
+`~/.local/state/dlssnr/discovery/rdr2-PID-TIMESTAMP`. Load a save and move the
+camera, then inspect the inventory:
+
+```sh
+python3 tools/analyze-discovery.py /path/to/session --output /private/path/report.json
+```
+
+The report lists depth attachment candidates, **unverified** motion-format
+candidates, shader bindings and top-level matrix member offsets. Reflection is
+limited to direct SPIR-V decorations. It never writes or enables a game profile:
+formats and matrix types alone cannot establish motion direction, camera
+semantics, current-frame ownership or depth correctness. Real RDR2 startup and
+inventory collection with this recorder still need a fresh game run.

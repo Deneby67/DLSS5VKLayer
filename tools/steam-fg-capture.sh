@@ -8,6 +8,14 @@ if (( $# == 0 )); then
   echo 'Use this script before %command% in the RDR2 Steam launch options.' >&2
   exit 2
 fi
+# Discovery is per-user opt-in, and the C++ layer independently matches RDR2.exe.
+# The marker is installed with a backup/restore script by install-discovery.py.
+if [[ "${DLSSFG_DISCOVERY:-auto}" == 1 ]] ||
+   [[ "${DLSSFG_DISCOVERY:-auto}" == auto && -f "$HOME/.config/dlssnr/fg-discovery.enabled" ]]; then
+  export DLSSFG_DISCOVERY_DIR="${DLSSFG_DISCOVERY_DIR:-$HOME/.local/state/dlssnr/discovery}"
+else
+  unset DLSSFG_DISCOVERY_DIR
+fi
 # Selective attachment passes isolated tests but RDR2 itself hangs during startup
 # with this RenderDoc build. Keep normal game launch as the default until the
 # game-specific incompatibility is diagnosed. Retain explicit developer opt-in.
