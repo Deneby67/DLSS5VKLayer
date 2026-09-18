@@ -94,7 +94,41 @@ also failed: Rockstar Launcher threw an exception in D3D11 device discovery,
 while RenderDoc reported failure to create the Vulkan device chain. This occurred
 before RDR2 started. `tools/steam-fg-capture.sh` therefore now disables RenderDoc
 and otherwise passes through the original command and NR settings, restoring
-normal launch for users who already added that prefix. Do not recommend it as
-an active capture mechanism. RDR2-only capture must first be implemented and
-verified without exposing the launcher to the capture layer. No RDR2 capture or
-validated game profile is claimed here.
+normal launch for users who already added that prefix.
+
+### Selective capture gate
+
+`tools/rdr2_capture_gate.cpp` now checks Wine's executable basename before loading
+RenderDoc, including the pre-instance extension-enumeration entry point. It
+forwards Vulkan unchanged for excluded processes. Rejecting layer negotiation
+was tested first but caused instance creation to fail on this loader, so exclusion
+uses transparent instance/device dispatch instead. A missing backend also falls
+back to normal device creation. Matching does not accept `RDR2.exe.bak` or an
+ancestor directory containing `RDR2.exe`.
+
+Verified with native Vulkan device tests and the custom Stable Proton:
+
+- Launcher, Social Club and other names create devices without mapping RenderDoc.
+- A Vulkan test named RDR2 loads RenderDoc and presents four frames successfully.
+- The actual Rockstar Launcher now completes device discovery without RenderDoc;
+  the actual RDR2 process loads RenderDoc and initializes a capture device.
+
+**Real gameplay capture still fails:** RDR2 hangs during startup with RenderDoc
+1.46 in this environment. Temporarily disabling DLSS and Reflex did not resolve
+the hang; original settings were restored. No 3D gameplay frame was obtained.
+Attaching the capture backend is therefore not treated as a successful capture.
+
+The installed Steam wrapper leaves capture **off by default**, preserving normal
+NR/game launch. `DLSSFG_ENABLE_RENDERDOC=1` is reserved for explicit developer
+diagnosis, not a recommended game launch option. Further work must diagnose the
+game-specific hang or collect resources through our own Vulkan tracking hooks.
+
+```sh
+bash tools/build-capture-gate.sh
+python3 tools/test-capture-gate.py --backend /path/to/renderdoc/lib/librenderdoc.so
+python3 tools/install-capture-gate.py --backend /path/to/renderdoc/lib/librenderdoc.so
+```
+
+The installer expects an already-registered per-user RenderDoc manifest, backs
+it up, replaces its entry points with the gate, and installs the inactive Steam
+wrapper. Source and runtime binary are kept separate; RenderDoc is not vendored.

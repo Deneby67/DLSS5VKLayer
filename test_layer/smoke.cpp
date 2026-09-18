@@ -42,6 +42,10 @@ static LRESULT CALLBACK SmokeWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 
 int main() {
+    if (const char* log = getenv("DLSSNR_SMOKE_LOG")) {
+        if (!std::freopen(log, "w", stdout)) return 2;
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+    }
     const uint32_t smW = EnvU32("DLSSNR_SMOKE_W", 1920);
     const uint32_t smH = EnvU32("DLSSNR_SMOKE_H", 1080);
     const uint32_t frames = EnvU32("DLSSNR_SMOKE_FRAMES", 5);
