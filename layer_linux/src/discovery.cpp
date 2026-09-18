@@ -25,7 +25,7 @@
 
 namespace dlssfg::discovery {
 using Json=nlohmann::json;
-constexpr uint64_t MaxLog=64ull<<20, MaxShaders=128ull<<20, MaxObjects=500000;
+constexpr uint64_t MaxLog=64ull<<20, MaxShaders=128ull<<20, MaxObjects=500000, MaxDescriptorLog=16ull<<20;
 template<class T> static uint64_t Handle(T h) {
     if constexpr (std::is_pointer_v<T>) return reinterpret_cast<uintptr_t>(h);
     else return uint64_t(h);
@@ -81,10 +81,16 @@ struct Session {
     std::mutex mutex;
     std::filesystem::path directory;
     int fd=-1;
-    bool stopped=false;
+    bool stopped=false,shaderDumpFull=false,descriptorLogFull=false;
+    uint64_t maxShaderBytes=MaxShaders,descriptorBytes=0;
     uint64_t bytes=0,shaderBytes=0,seq=0,nextId=0,presents=0;
     std::set<std::string> shaderFiles;
     Session() {
+        // An explicitly smaller budget is useful for tests; increases stay bounded.
+        if (const char* value=getenv("DLSSFG_SHADER_LIMIT_MIB")) {
+            char* end=nullptr; errno=0; auto mib=strtoull(value,&end,10);
+            if (*value && end && !*end && !errno && mib<=1024) maxShaderBytes=mib<<20;
+        }
         const auto stamp=std::chrono::system_clock::now().time_since_epoch().count();
         directory=std::filesystem::path(getenv("DLSSFG_DISCOVERY_DIR"))/
             ("rdr2-"+std::to_string(getpid())+"-"+std::to_string(stamp));
@@ -95,17 +101,27 @@ struct Session {
         try {
             Require(Sha256("abc",3)=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","SHA-256 self-test failed");
             Event({{"event","session"},{"schema",1},{"pid",getpid()},{"mode","metadata_only"},
-                {"gpu_contents_captured",false},{"max_log_bytes",MaxLog},{"max_shader_bytes",MaxShaders},
+                {"gpu_contents_captured",false},{"max_log_bytes",MaxLog},{"max_shader_bytes",maxShaderBytes},{"max_descriptor_log_bytes",MaxDescriptorLog},
                 {"limitations",{"no_command_recording","no_gpu_completion_tracking","no_memory_contents", "no_descriptor_update_templates","no_renderpass2_or_dynamic_rendering","no_inline_shader_modules","no_shader_objects","partial_pipeline_failures_not_recorded"}}});
         } catch (...) { close(fd); fd=-1; throw; }
         fprintf(stderr,"[fg-discovery] metadata session: %s\n",directory.c_str());
     }
     ~Session() { if (fd>=0) close(fd); }
     void Event(Json j) {
-        j["seq"]=++seq; j["present_marker"]=presents;
+        const auto event=j.value("event",std::string{});
+        const bool descriptor=event=="descriptor_write" || event=="descriptor_copy";
+        if (descriptor && descriptorLogFull) return;
+        j["seq"]=seq+1; j["present_marker"]=presents;
         const std::string line=j.dump(-1,' ',false,Json::error_handler_t::replace)+"\n";
+        if (descriptor && line.size()>MaxDescriptorLog-descriptorBytes) {
+            descriptorLogFull=true;
+            Event({{"event","descriptor_budget_exhausted"},{"bytes",descriptorBytes},
+                {"effect","descriptor updates omitted; resource inventory continues"}});
+            return;
+        }
         Require(line.size()<=MaxLog-bytes,"metadata limit reached");
-        Write(fd,line.data(),line.size()); bytes+=line.size();
+        Write(fd,line.data(),line.size()); bytes+=line.size(); ++seq;
+        if (descriptor) descriptorBytes+=line.size();
     }
     void Stop(const char* reason) noexcept {
         if (stopped) return;
@@ -212,13 +228,20 @@ static VkResult VKAPI_CALL CreateShaderModule(VkDevice d,const VkShaderModuleCre
     if (result==VK_SUCCESS) Record(c,[&](Context& ctx,Session& s) {
         Require(ci->codeSize<=16*1024*1024 && ci->codeSize%4==0,"unsupported shader size");
         auto hash=Sha256(ci->pCode,ci->codeSize);
-        if (s.shaderFiles.insert(hash).second) {
-            Require(ci->codeSize<=MaxShaders-s.shaderBytes,"shader byte limit reached");
-            Fd f(open((s.directory/"shaders"/(hash+".spv")).c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600));
-            Require(f.fd>=0,"cannot write shader"); Write(f.fd,ci->pCode,ci->codeSize); s.shaderBytes+=ci->codeSize;
+        bool saved=s.shaderFiles.count(hash)!=0;
+        if (!saved && !s.shaderDumpFull) {
+            if (ci->codeSize>s.maxShaderBytes-s.shaderBytes) {
+                s.shaderDumpFull=true;
+                s.Event({{"event","shader_budget_exhausted"},{"bytes",s.shaderBytes},
+                    {"effect","new shader binaries omitted; hashes and resource inventory continue"}});
+            } else {
+                Fd f(open((s.directory/"shaders"/(hash+".spv")).c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600));
+                Require(f.fd>=0,"cannot write shader"); Write(f.fd,ci->pCode,ci->codeSize);
+                s.shaderBytes+=ci->codeSize; s.shaderFiles.insert(hash); saved=true;
+            }
         }
         auto id=ctx.New(VK_OBJECT_TYPE_SHADER_MODULE,Handle(*out)); ctx.shaders[Handle(*out)]=hash;
-        s.Event({{"event","shader"},{"device",ctx.id},{"id",id},{"sha256",hash},{"bytes",ci->codeSize}});
+        s.Event({{"event","shader"},{"device",ctx.id},{"id",id},{"sha256",hash},{"bytes",ci->codeSize},{"binary_saved",saved}});
     });
     return result;
 }
@@ -341,6 +364,7 @@ static void VKAPI_CALL UpdateDescriptorSets(VkDevice d,uint32_t count,const VkWr
     auto c=Get(d);
     Next<PFN_vkUpdateDescriptorSets>(d,c,"vkUpdateDescriptorSets")(d,count,writes,copyCount,copies);
     Record(c,[&](Context& ctx,Session& s) {
+        if (s.descriptorLogFull) return;
         Require(count<=4096 && copyCount<=4096,"descriptor batch too large");
         uint64_t elements=0;
         for(uint32_t i=0;i<count;++i) {

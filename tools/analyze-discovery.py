@@ -43,7 +43,7 @@ def reflect(path):
             'reflection_limits':['direct decorations only','top-level matrix members only','no camera semantics or values']}
 
 def analyze(session):
-    counts=collections.Counter(); shaders=set(); depths=[]; motion=[]; pipeline_shaders=collections.Counter()
+    counts=collections.Counter(); shaders=set(); omitted=set(); depths=[]; motion=[]; pipeline_shaders=collections.Counter()
     limits=[]; last_seq=0; markers=0; partial=False
     with (session/'events.jsonl').open() as f:
         for line in f:
@@ -55,7 +55,9 @@ def analyze(session):
             if event=='session':
                 if r['schema']!=1: raise ValueError('unsupported discovery schema')
                 limits=r['limitations']
-            elif event=='shader': shaders.add(r['sha256'])
+            elif event=='shader':
+                if r.get('binary_saved',True): shaders.add(r['sha256'])
+                else: omitted.add(r['sha256'])
             elif event in ('graphics_pipeline','compute_pipeline'):
                 for stage in r.get('stages',[r.get('stage',{})]):
                     if stage.get('sha256'): pipeline_shaders[stage['sha256']]+=1
@@ -64,12 +66,26 @@ def analyze(session):
                 # Only a format/usage heuristic: RG16/RG32 float or RG16 SNORM.
                 if r['format'] in (78,83,103) and r['usage']&(0x10|0x8): motion.append(r)
     status=session/'stopped.txt'
+    reflected=[reflect(session/'shaders'/(h+'.spv')) for h in sorted(shaders)]
+    matrix_blocks={}
+    for shader in reflected:
+        for descriptor in shader['descriptors']:
+            if not descriptor['matrix_members']: continue
+            signature=(descriptor['set'],descriptor['binding'],descriptor['storage_class'],
+                tuple((m['offset'],m['matrix_stride'],m['row_major'],m['column_major'],m['columns']) for m in descriptor['matrix_members']))
+            if signature not in matrix_blocks:
+                matrix_blocks[signature]={'set':descriptor['set'],'binding':descriptor['binding'],
+                    'storage_class':descriptor['storage_class'],'members':descriptor['matrix_members'],
+                    'shader_count':0,'example_shader_hashes':[],'camera_verified':False}
+            block=matrix_blocks[signature]; block['shader_count']+=1
+            if len(block['example_shader_hashes'])<3: block['example_shader_hashes'].append(shader['sha256'])
     return {'schema':1,'validated_profile':False,'gpu_contents_captured':False,
         'present_markers_seen':markers,'event_counts':dict(counts),'trailing_partial_line':partial,
         'stopped_reason':status.read_text() if status.exists() else None,'limitations':limits,
         'depth_attachment_candidates':depths,'motion_format_candidates_unverified':motion,
         'shader_pipeline_references':dict(pipeline_shaders),
-        'shaders':[reflect(session/'shaders'/(h+'.spv')) for h in sorted(shaders)],
+        'shaders':reflected,'shader_binaries_omitted':sorted(omitted-shaders),
+        'matrix_block_candidates':sorted(matrix_blocks.values(),key=lambda b:-b['shader_count']),
         'next_required':['command submission/resource history','depth/motion readback validation',
                          'camera buffer values under movement and camera cuts','exact game executable hash']}
 if __name__=='__main__':

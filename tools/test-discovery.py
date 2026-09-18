@@ -70,6 +70,19 @@ with tempfile.TemporaryDirectory(prefix='fg-discovery-test-') as tmp:
     else: raise AssertionError('corrupt shader accepted')
     run('rdr2.EXE',root/'limit','limit')
     limited=next((root/'limit').iterdir())
-    assert (limited/'stopped.txt').read_text()=='metadata limit reached'
+    assert not (limited/'stopped.txt').exists()
+    limited_records=[json.loads(x) for x in (limited/'events.jsonl').read_text().splitlines()]
+    assert sum(r['event']=='descriptor_budget_exhausted' for r in limited_records)==1
+    assert limited_records[-1]['event']=='device_destroy'
+    assert [r['seq'] for r in limited_records]==list(range(1,len(limited_records)+1))
     assert (limited/'events.jsonl').stat().st_size<=64<<20
+    env['DLSSFG_SHADER_LIMIT_MIB']='0'
+    run('RDR2.exe',root/'shader-limit')
+    capped=next((root/'shader-limit').iterdir())
+    assert not (capped/'stopped.txt').exists()
+    cr=[json.loads(x) for x in (capped/'events.jsonl').read_text().splitlines()]
+    assert sum(r['event']=='shader_budget_exhausted' for r in cr)==1
+    assert len([r for r in cr if r['event']=='shader' and not r['binary_saved']])==2
+    assert not list((capped/'shaders').iterdir()) and cr[-1]['event']=='device_destroy'
+    assert len(analysis.analyze(capped)['shader_binaries_omitted'])==1
 print('PASS: process scope, disabled mode, I/O failure fallback, hashes/dedup, resource generations, log cap')

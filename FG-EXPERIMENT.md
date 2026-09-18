@@ -153,8 +153,13 @@ synchronous metadata/shader writes can slow loading and rendering while active.
 Do not use this diagnostic run for performance comparisons.
 
 Per process, JSONL is limited to 64 MiB, shader files to 128 MiB and live tracked
-objects to 500,000. Reaching a limit stops recording; ordinary Vulkan dispatch
-continues. An unwritable directory or absent `libcrypto.so.3` disables discovery
+objects to 500,000. Descriptor writes/copies have a separate 16 MiB share of
+the JSONL budget. Exhausting shader storage records `binary_saved=false` while
+continuing hashes and resource metadata. Exhausting descriptor logging suppresses
+further update records while inventory continues. Reaching the overall log/object
+limit stops recording; ordinary Vulkan dispatch continues.
+`DLSSFG_SHADER_LIMIT_MIB` can set the shader budget from 0 to 1024 MiB; invalid
+values retain the 128 MiB default. An unwritable directory or absent `libcrypto.so.3` disables discovery
 without preventing device/resource creation, including hooks cached before the
 device existed. Captures use private directories/files and are not published.
 
@@ -198,4 +203,24 @@ candidates, shader bindings and top-level matrix member offsets. Reflection is
 limited to direct SPIR-V decorations. It never writes or enables a game profile:
 formats and matrix types alone cannot establish motion direction, camera
 semantics, current-frame ownership or depth correctness. Real RDR2 startup and
-inventory collection with this recorder still need a fresh game run.
+inventory beyond loading still need a fresh game run with the revised budgets.
+
+
+#### First real RDR2 inventory
+
+RDR2 reached gameplay with the recorder loaded and without RenderDoc. The first
+recorder stopped after 6,186 unique shader binaries exhausted its 128 MiB budget,
+at CPU present marker 8 during loading. The native layer itself continued running.
+The budget handling above fixes this diagnostic failure: shader/descriptor caps
+no longer stop the rest of resource discovery. Tests force a zero-byte shader
+budget and overflow the descriptor budget, then verify continued resource lifetime
+records and normal device destruction with Vulkan validation enabled.
+
+The loading inventory includes depth attachments at 2293×960 and 3440×1440. A
+uniform block at set 0/binding 29 contains seven matrix members at byte offsets
+0, 64, 128, 192, 272, 336 and 400; the same layout appears in 4,083 saved shaders.
+Another group uses binding 28 with the same offsets. These are **camera candidates,
+not confirmed camera data**. Shader debug names are absent. The analyzer now groups
+these structural candidates and reports omitted binaries explicitly. It still
+never enables a game profile, and no motion resource or gameplay buffer contents
+have been verified. Private captures/reports are excluded from the repository.
