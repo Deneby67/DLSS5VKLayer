@@ -89,5 +89,11 @@ game launch options or install game FG presentation.
 
 The old direct `tools/capture-rdr2.sh` attempt is retained only as a diagnostic
 record: wrapping the entire runtime in RenderDoc did not launch RDR2 on the test
-machine. Use a normal Steam launch for the next gameplay test; no RDR2 capture or
-validated game profile is claimed here.
+machine. For the next gameplay test, place the absolute path to
+`tools/steam-fg-capture.sh` immediately before `%command%` in the existing Steam
+launch options. It enables the registered RenderDoc Vulkan layer, temporarily
+disables NR in that game process, and lets Steam choose the existing Proton and
+runtime. It does not preload RenderDoc into the runtime launcher. Restart the
+game with those options, then connect the capture client to the RDR2 process.
+The wrapper's environment propagation is tested; a gameplay capture through it
+is still pending. No RDR2 capture or validated game profile is claimed here.
