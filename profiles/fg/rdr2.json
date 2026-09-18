@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "id": "rdr2-vulkan",
+  "enabled": false,
+  "executable": "RDR2.exe",
+  "optical_flow_fallback": true,
+  "status": "awaiting_capture",
+  "notes": "Enable only after capturing and verifying the game's shaders, depth, motion vectors and camera buffers. No absolute process addresses or guessed resource bindings."
+}

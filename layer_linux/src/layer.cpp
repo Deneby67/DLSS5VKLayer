@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <algorithm>
 #include <memory>
 #include <mutex>
@@ -662,6 +663,23 @@ static void PollHotkeys(DeviceChain* dc) {
 static bool LayerEnabled() {
     static const bool e = [] {
         if (DuplicateLayerCopy()) return false;
+        // Wine exposes the Windows executable as argv[0]. Rockstar's Chromium
+        // renderer inherits the game's layer environment but is a separate
+        // process, so ClaimPrimary cannot stop it racing the game on shm.bin.
+        // Leave its Vulkan rendering intact and bypass only neural processing.
+        char executable[4096] = {};
+        if (FILE* cmdline = std::fopen("/proc/self/cmdline", "rb")) {
+            const size_t n = std::fread(executable, 1, sizeof(executable) - 1, cmdline);
+            std::fclose(cmdline);
+            executable[n] = '\0';
+            const char* basename = executable;
+            for (const char* p = executable; *p; ++p)
+                if (*p == '/' || *p == '\\') basename = p + 1;
+            if (!strcasecmp(basename, "SocialClubHelper.exe")) {
+                Log("[layer] bypassing Rockstar Social Club renderer");
+                return false;
+            }
+        }
         const char* v = getenv("VKLayer_DLSS5");
         if (v && v[0] == '1') return true;
         const char* o = getenv("DLSSNR_ENABLE");

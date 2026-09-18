@@ -1,5 +1,9 @@
 # DLSS5VKLayer
 
+This fork's `feature/fg-x2-sdr` branch adds an experimental NVIDIA FG backend
+and JSON game-profile loader. The offscreen FG gate passes; **in-game FG is not
+implemented yet**. See [progress, tests and remaining work](FG-EXPERIMENT.md).
+
 DLSS5VKLayer is a Linux Vulkan layer plus helper service that forwards presented frames to a Windows NGX neural-rendering helper running under Wine or a custom Proton compatibility tool.
 
 This project is experimental. It is intended for local testing and research.

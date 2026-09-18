@@ -10,3 +10,6 @@
 *.swp
 .qmake.stash
 moc_*.cpp
+
+# Local diagnostics from the pre-fork installation
+/build-layer-fix/

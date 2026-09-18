@@ -7,16 +7,27 @@ windows_cpp_link_args = [
   '-lwinpthread',
   '-Wl,--end-group',
   '-pthread',
+  '-lshell32',
 ]
 
 executable('dlssnr_helper',
   '../helper/main.cpp',
   '../core/ngx_snippet.cpp',
   '../core/guard.cpp',
+  '../core/ngx_fg.cpp',
+  '../common/fg_profile.cpp',
+  '../test_layer/fg_probe.cpp',
+  cpp_args: ['-DDLSSFG_EMBED_PROBE'],
   include_directories: windows_inc,
   link_args: windows_cpp_link_args,
   install: false,
   gui_app: true
+)
+
+executable('fg_probe', '../test_layer/fg_probe.cpp', '../core/ngx_fg.cpp', '../core/guard.cpp',
+  include_directories: windows_inc,
+  link_args: windows_cpp_link_args,
+  install: false,
 )
 
 executable('smoke', '../test_layer/smoke.cpp',
