@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """GPU integration tests for metadata capture and fail-open behavior (no presentation)."""
-import argparse, hashlib, importlib.util, json, os, subprocess, tempfile
+import argparse, hashlib, importlib.util, json, os, struct, subprocess, tempfile
 import sys
 sys.dont_write_bytecode=True
 from pathlib import Path
@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='fg-discovery-test-') as tmp:
     for name in ['Launcher.exe','SocialClubHelper.exe','RDR2.exe.bak','/RDR2.exe/Launcher.exe']:
         run(name,root/'excluded'); assert not (root/'excluded').exists()
     run('RDR2.exe',None)
-    run('RDR2.exe','/dev/null/impossible')
+    run('RDR2.exe','/dev/null/impossible','camera-pass')
     run(r'Z:\Games\RDR2.exe',root/'good')
     session=next((root/'good').iterdir())
     records=[json.loads(x) for x in (session/'events.jsonl').read_text().splitlines()]
@@ -85,4 +85,19 @@ with tempfile.TemporaryDirectory(prefix='fg-discovery-test-') as tmp:
     assert len([r for r in cr if r['event']=='shader' and not r['binary_saved']])==2
     assert not list((capped/'shaders').iterdir()) and cr[-1]['event']=='device_destroy'
     assert len(analysis.analyze(capped)['shader_binaries_omitted'])==1
+    env.pop('DLSSFG_SHADER_LIMIT_MIB',None)
+    env['DLSSFG_METADATA_LIMIT_MIB']='1'
+    run('RDR2.exe',root/'camera','camera')
+    camera=next((root/'camera').iterdir())
+    assert (camera/'stopped.txt').read_text()=='metadata limit reached'
+    rows=[json.loads(x) for x in next((camera/'camera').glob('samples-*.jsonl')).read_text().splitlines()]
+    samples=[r for r in rows if r['event']=='cpu_snapshot_before_submit']
+    assert len(samples)==3, len(samples)
+    for base,s in zip([1,2,3],samples):
+        assert bytes.fromhex(s['bytes_hex'])==struct.pack('<116f',*(base+i*.25 for i in range(116)))
+        assert s['offset']==256 and s['binding']==29 and not s['gpu_completion_verified'] and not s['camera_verified']
+        assert any(r['event']=='submission_result' and r['submission']==s['submission'] and r['result']==0 for r in rows)
+    assert rows[-1]['event']=='end' and rows[-1]['samples']==3
+    assert rows[-1]['misses']['memory not mapped']>=1
+    assert rows[-1]['misses']['no tracked bound sets in sampled submission']>=1
 print('PASS: process scope, disabled mode, I/O failure fallback, hashes/dedup, resource generations, log cap')

@@ -9,14 +9,16 @@ if [[ -d build-layer-fix/deps/usr/include ]]; then
 fi
 mkdir -p build/discovery
 make -j24 -f - <<'MAKE'
-SOURCES := layer discovery shader_vk dlssnr_pass composition capture scaler_vk hotkey
+SOURCES := layer discovery camera_probe shader_vk dlssnr_pass composition capture scaler_vk hotkey
 OBJECTS := $(addprefix build/discovery/,$(addsuffix .o,$(SOURCES)))
-all: build/discovery/libVkLayer_NV_dlssnr.so build/discovery/discovery-probe
+all: build/discovery/libVkLayer_NV_dlssnr.so build/discovery/discovery-probe build/discovery/camera-state-test
 build/discovery/%.o: layer_linux/src/%.cpp
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 build/discovery/libVkLayer_NV_dlssnr.so: $(OBJECTS) layer_linux/dlssnr.map
 	$(CXX) -shared -pthread -static-libstdc++ -static-libgcc -Wl,--version-script=layer_linux/dlssnr.map -Wl,-Bsymbolic $(OBJECTS) -ldl -o $@
-build/discovery/discovery-probe: test_layer/discovery_probe.cpp
+build/discovery/discovery-probe: test_layer/discovery_probe.cpp test_layer/camera_probe_gpu.h
 	$(CXX) $(CXXFLAGS) $< -l:libvulkan.so.1 -o $@
+build/discovery/camera-state-test: test_layer/camera_probe_state_test.cpp layer_linux/src/camera_probe.cpp layer_linux/src/camera_probe.h
+	$(CXX) $(CXXFLAGS) test_layer/camera_probe_state_test.cpp layer_linux/src/camera_probe.cpp -o $@
 -include $(OBJECTS:.o=.d)
 MAKE

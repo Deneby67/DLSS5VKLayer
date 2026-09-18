@@ -1,4 +1,5 @@
 #include "discovery.h"
+#include "camera_probe.h"
 #include "../../third_party/nlohmann/json.hpp"
 #include <array>
 #include <algorithm>
@@ -82,7 +83,7 @@ struct Session {
     std::filesystem::path directory;
     int fd=-1;
     bool stopped=false,shaderDumpFull=false,descriptorLogFull=false;
-    uint64_t maxShaderBytes=MaxShaders,descriptorBytes=0;
+    uint64_t maxShaderBytes=MaxShaders,maxLogBytes=MaxLog,descriptorBytes=0;
     uint64_t bytes=0,shaderBytes=0,seq=0,nextId=0,presents=0;
     std::set<std::string> shaderFiles;
     Session() {
@@ -90,6 +91,10 @@ struct Session {
         if (const char* value=getenv("DLSSFG_SHADER_LIMIT_MIB")) {
             char* end=nullptr; errno=0; auto mib=strtoull(value,&end,10);
             if (*value && end && !*end && !errno && mib<=1024) maxShaderBytes=mib<<20;
+        }
+        if (const char* value=getenv("DLSSFG_METADATA_LIMIT_MIB")) {
+            char* end=nullptr;errno=0;auto mib=strtoull(value,&end,10);
+            if(*value && end && !*end && !errno && mib>=1 && mib<=64)maxLogBytes=mib<<20;
         }
         const auto stamp=std::chrono::system_clock::now().time_since_epoch().count();
         directory=std::filesystem::path(getenv("DLSSFG_DISCOVERY_DIR"))/
@@ -101,7 +106,7 @@ struct Session {
         try {
             Require(Sha256("abc",3)=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","SHA-256 self-test failed");
             Event({{"event","session"},{"schema",1},{"pid",getpid()},{"mode","metadata_only"},
-                {"gpu_contents_captured",false},{"max_log_bytes",MaxLog},{"max_shader_bytes",maxShaderBytes},{"max_descriptor_log_bytes",MaxDescriptorLog},
+                {"gpu_contents_captured",false},{"max_log_bytes",maxLogBytes},{"max_shader_bytes",maxShaderBytes},{"max_descriptor_log_bytes",MaxDescriptorLog},
                 {"limitations",{"no_command_recording","no_gpu_completion_tracking","no_memory_contents", "no_descriptor_update_templates","no_renderpass2_or_dynamic_rendering","no_inline_shader_modules","no_shader_objects","partial_pipeline_failures_not_recorded"}}});
         } catch (...) { close(fd); fd=-1; throw; }
         fprintf(stderr,"[fg-discovery] metadata session: %s\n",directory.c_str());
@@ -119,7 +124,7 @@ struct Session {
                 {"effect","descriptor updates omitted; resource inventory continues"}});
             return;
         }
-        Require(line.size()<=MaxLog-bytes,"metadata limit reached");
+        Require(line.size()<=maxLogBytes-bytes,"metadata limit reached");
         Write(fd,line.data(),line.size()); bytes+=line.size(); ++seq;
         if (descriptor) descriptorBytes+=line.size();
     }
@@ -136,6 +141,9 @@ struct Session {
 };
 struct Context {
     std::shared_ptr<Session> session;
+    std::unique_ptr<CameraProbe> camera;
+    VkDevice device=VK_NULL_HANDLE;
+    PFN_vkGetDeviceProcAddr next=nullptr;
     uint64_t id=0;
     std::unordered_map<std::string,PFN_vkVoidFunction> functions;
     std::map<std::pair<VkObjectType,uint64_t>,uint64_t> ids;
@@ -154,7 +162,7 @@ struct Context {
         Require(ids.size()<MaxObjects,"live object limit reached");
         return ids[{kind,handle}]=++session->nextId;
     }
-    template<class T> T Fn(const char* name) { return reinterpret_cast<T>(functions.at(name)); }
+    template<class T> T Fn(const char* name) { auto it=functions.find(name); return reinterpret_cast<T>(it==functions.end()?next(device,name):it->second); }
 };
 static std::mutex registryMutex;
 static std::unordered_map<VkDevice,std::shared_ptr<Context>> contexts;
@@ -178,6 +186,28 @@ template<class F> static void Record(const std::shared_ptr<Context>& c,F&& f) no
     if (s.stopped) return;
     try { f(*c,s); } catch (const std::exception& e) { s.Stop(e.what()); } catch (...) { s.Stop("diagnostic exception"); }
 }
+// Independent of inventory logging caps: retain live capture state for requests
+// made only after the user has loaded a scene.
+template<class F> static void Camera(const std::shared_ptr<Context>& c,F&& f) noexcept {
+    if (!c || !c->session) return;
+    std::lock_guard<std::mutex> lock(c->session->mutex);
+    if (!c->camera) return;
+    try { f(*c->camera); }
+    catch (const std::exception& e) {
+        fprintf(stderr,"[fg-camera] disabled: %s\n",e.what());
+        try { Fd fd(open((c->session->directory/"camera"/("disabled-"+std::to_string(c->id)+".txt")).c_str(),O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0600)); if(fd.fd>=0)Write(fd.fd,e.what(),std::strlen(e.what())); } catch (...) {}
+        c->camera.reset();
+    } catch (...) { c->camera.reset(); }
+}
+static std::shared_ptr<Context> GetCommand(VkCommandBuffer command) {
+    std::lock_guard<std::mutex> lock(registryMutex);
+    const void* key=*reinterpret_cast<void**>(command);
+    for(const auto& entry:contexts) if(*reinterpret_cast<void**>(entry.first)==key)return entry.second;
+    return nullptr;
+}
+template<class T> static T CommandNext(VkCommandBuffer command,const std::shared_ptr<Context>& c,const char* name) {
+    return Next<T>(reinterpret_cast<VkDevice>(command),c,name);
+}
 static Json Ref(Context& c,VkObjectType type,uint64_t handle) {
     return {{"id",c.Ref(type,handle)},{"handle",handle}};
 }
@@ -190,17 +220,27 @@ static Json Ref(Context& c,VkObjectType type,uint64_t handle) {
  X(vkAllocateDescriptorSets) X(vkFreeDescriptorSets) X(vkUpdateDescriptorSets) \
  X(vkCreateRenderPass) X(vkDestroyRenderPass) X(vkCreateFramebuffer) X(vkDestroyFramebuffer)
 
-void Register(VkDevice device,PFN_vkGetDeviceProcAddr next) noexcept {
+void Register(VkDevice device,PFN_vkGetDeviceProcAddr next,const VkPhysicalDeviceMemoryProperties& memory) noexcept {
     if (!Enabled()) return;
     std::lock_guard<std::mutex> lock(registryMutex);
     if (startupFailed) return;
     try {
         if (!processSession) processSession=std::make_shared<Session>();
-        auto c=std::make_shared<Context>(); c->session=processSession;
+        auto c=std::make_shared<Context>(); c->session=processSession; c->device=device; c->next=next;
 #define LOAD(name) c->functions[#name]=next(device,#name); Require(c->functions[#name]!=nullptr,"missing core Vulkan dispatch");
         FUNCTIONS(LOAD)
 #undef LOAD
-        Record(c,[&](Context& ctx,Session& s) { ctx.id=++s.nextId; s.Event({{"event","device"},{"device",ctx.id}}); });
+        for(const char* name:{"vkAllocateMemory","vkFreeMemory","vkMapMemory","vkUnmapMemory","vkBindBufferMemory",
+            "vkAllocateCommandBuffers","vkFreeCommandBuffers","vkBeginCommandBuffer","vkResetCommandBuffer",
+            "vkResetCommandPool","vkDestroyCommandPool","vkCmdBindDescriptorSets","vkCmdExecuteCommands",
+            "vkBindBufferMemory2","vkBindBufferMemory2KHR","vkMapMemory2","vkMapMemory2KHR","vkUnmapMemory2","vkUnmapMemory2KHR",
+            "vkUpdateDescriptorSetWithTemplate","vkUpdateDescriptorSetWithTemplateKHR"})
+            if(auto fn=next(device,name))c->functions[name]=fn;
+        {std::lock_guard<std::mutex> guard(processSession->mutex);c->id=++processSession->nextId;}
+        Record(c,[&](Context& ctx,Session& s) { s.Event({{"event","device"},{"device",ctx.id}}); });
+        // Creating the optional probe must not affect ordinary Vulkan dispatch.
+        try { c->camera=std::make_unique<CameraProbe>(processSession->directory,c->id,memory); }
+        catch(const std::exception& e) { fprintf(stderr,"[fg-camera] unavailable: %s\n",e.what()); }
         contexts[device]=c;
     } catch (const std::exception& e) { startupFailed=true; fprintf(stderr,"[fg-discovery] unavailable: %s\n",e.what()); }
     catch (...) { startupFailed=true; }
@@ -216,6 +256,7 @@ void Remove(VkDevice device) noexcept {
 void Present(VkDevice device,const VkPresentInfoKHR* info) noexcept {
     if (!Enabled()) return;
     auto c=Get(device);
+    Camera(c,[](CameraProbe& p){p.present();});
     Record(c,[&](Context& ctx,Session& s) {
         ++s.presents;
         // A CPU marker only, never evidence that resource writes completed.
@@ -248,6 +289,7 @@ static VkResult VKAPI_CALL CreateShaderModule(VkDevice d,const VkShaderModuleCre
 #define DESTROY(Name,Type,Kind) \
 static void VKAPI_CALL Destroy##Name(VkDevice d,Type object,const VkAllocationCallbacks* a) { \
  auto c=Get(d); \
+ if constexpr (Kind==VK_OBJECT_TYPE_BUFFER) Camera(c,[&](CameraProbe& p){p.destroyBuffer((VkBuffer)object);}); \
  Record(c,[&](Context& ctx,Session& s) { s.Event({{"event","destroy"},{"device",ctx.id},{"kind",Kind},{"object",Ref(ctx,Kind,Handle(object))}}); ctx.ids.erase({Kind,Handle(object)}); if (Kind==VK_OBJECT_TYPE_SHADER_MODULE) ctx.shaders.erase(Handle(object)); }); \
  Next<PFN_vkDestroy##Name>(d,c,"vkDestroy" #Name)(d,object,a); }
 DESTROY(ShaderModule,VkShaderModule,VK_OBJECT_TYPE_SHADER_MODULE)
@@ -278,9 +320,14 @@ CREATE_START(ImageView,VkImageViewCreateInfo,VkImageView)
         {"format",ci->format},{"view_type",ci->viewType},{"aspect",r.aspectMask},{"base_mip",r.baseMipLevel},
         {"mips",r.levelCount},{"base_layer",r.baseArrayLayer},{"layers",r.layerCount}});
 CREATE_END
-CREATE_START(Buffer,VkBufferCreateInfo,VkBuffer)
-    s.Event({{"event","buffer"},{"device",ctx.id},{"id",ctx.New(VK_OBJECT_TYPE_BUFFER,Handle(*out))},{"bytes",ci->size},{"usage",ci->usage},{"flags",ci->flags}});
-CREATE_END
+static VkResult VKAPI_CALL CreateBuffer(VkDevice d,const VkBufferCreateInfo* ci,const VkAllocationCallbacks* a,VkBuffer* out) {
+    auto c=Get(d); auto r=Next<PFN_vkCreateBuffer>(d,c,"vkCreateBuffer")(d,ci,a,out);
+    if(r==VK_SUCCESS) {
+        Camera(c,[&](CameraProbe& p){p.buffer(*out,ci->size,ci->flags);});
+        Record(c,[&](Context& ctx,Session& s){s.Event({{"event","buffer"},{"device",ctx.id},{"id",ctx.New(VK_OBJECT_TYPE_BUFFER,Handle(*out))},{"bytes",ci->size},{"usage",ci->usage},{"flags",ci->flags}});});
+    }
+    return r;
+}
 CREATE_START(DescriptorSetLayout,VkDescriptorSetLayoutCreateInfo,VkDescriptorSetLayout)
     Json bindings=Json::array();
     for (uint32_t i=0;i<ci->bindingCount;++i) { const auto& b=ci->pBindings[i]; bindings.push_back({{"binding",b.binding},{"type",b.descriptorType},{"count",b.descriptorCount},{"stages",b.stageFlags}}); }
@@ -338,6 +385,7 @@ static VkResult VKAPI_CALL CreateDescriptorPool(VkDevice d,const VkDescriptorPoo
 static VkResult VKAPI_CALL AllocateDescriptorSets(VkDevice d,const VkDescriptorSetAllocateInfo* ci,VkDescriptorSet* out) {
     auto c=Get(d);
     auto r=Next<PFN_vkAllocateDescriptorSets>(d,c,"vkAllocateDescriptorSets")(d,ci,out);
+    if(r==VK_SUCCESS) Camera(c,[&](CameraProbe& p){for(uint32_t i=0;i<ci->descriptorSetCount;++i)p.set(out[i],ci->descriptorPool);});
     if (r==VK_SUCCESS) Record(c,[&](Context& ctx,Session& s) { Require(ci->descriptorSetCount<=65536,"descriptor allocation too large"); for(uint32_t i=0;i<ci->descriptorSetCount;++i) { ctx.setPools[Handle(out[i])]=Handle(ci->descriptorPool); s.Event({{"event","descriptor_set"},{"device",ctx.id},
         {"id",ctx.New(VK_OBJECT_TYPE_DESCRIPTOR_SET,Handle(out[i]))},{"pool",Ref(ctx,VK_OBJECT_TYPE_DESCRIPTOR_POOL,Handle(ci->descriptorPool))},
         {"layout",Ref(ctx,VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,Handle(ci->pSetLayouts[i]))}}); } });
@@ -346,23 +394,27 @@ static VkResult VKAPI_CALL AllocateDescriptorSets(VkDevice d,const VkDescriptorS
 static VkResult VKAPI_CALL FreeDescriptorSets(VkDevice d,VkDescriptorPool pool,uint32_t count,const VkDescriptorSet* sets) {
     auto c=Get(d);
     auto r=Next<PFN_vkFreeDescriptorSets>(d,c,"vkFreeDescriptorSets")(d,pool,count,sets);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){for(uint32_t i=0;i<count;++i)p.freeSet(sets[i]);});
     if (r==VK_SUCCESS) Record(c,[&](Context& ctx,Session& s) { for(uint32_t i=0;i<count;++i) { s.Event({{"event","destroy"},{"device",ctx.id},{"kind",VK_OBJECT_TYPE_DESCRIPTOR_SET},{"object",Ref(ctx,VK_OBJECT_TYPE_DESCRIPTOR_SET,Handle(sets[i]))}}); ctx.ids.erase({VK_OBJECT_TYPE_DESCRIPTOR_SET,Handle(sets[i])}); ctx.setPools.erase(Handle(sets[i])); } });
     return r;
 }
 static VkResult VKAPI_CALL ResetDescriptorPool(VkDevice d,VkDescriptorPool pool,VkDescriptorPoolResetFlags flags) {
     auto c=Get(d);
     auto r=Next<PFN_vkResetDescriptorPool>(d,c,"vkResetDescriptorPool")(d,pool,flags);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.pool(pool);});
     if (r==VK_SUCCESS) Record(c,[&](Context& ctx,Session& s) { ctx.ForgetPool(Handle(pool)); s.Event({{"event","descriptor_pool_reset"},{"device",ctx.id},{"pool",Ref(ctx,VK_OBJECT_TYPE_DESCRIPTOR_POOL,Handle(pool))}}); });
     return r;
 }
 static void VKAPI_CALL DestroyDescriptorPool(VkDevice d,VkDescriptorPool pool,const VkAllocationCallbacks* a) {
     auto c=Get(d);
+    Camera(c,[&](CameraProbe& p){p.pool(pool);});
     Record(c,[&](Context& ctx,Session& s) { ctx.ForgetPool(Handle(pool)); s.Event({{"event","descriptor_pool_destroy"},{"device",ctx.id},{"pool",Ref(ctx,VK_OBJECT_TYPE_DESCRIPTOR_POOL,Handle(pool))}}); ctx.ids.erase({VK_OBJECT_TYPE_DESCRIPTOR_POOL,Handle(pool)}); });
     Next<PFN_vkDestroyDescriptorPool>(d,c,"vkDestroyDescriptorPool")(d,pool,a);
 }
 static void VKAPI_CALL UpdateDescriptorSets(VkDevice d,uint32_t count,const VkWriteDescriptorSet* writes,uint32_t copyCount,const VkCopyDescriptorSet* copies) {
     auto c=Get(d);
     Next<PFN_vkUpdateDescriptorSets>(d,c,"vkUpdateDescriptorSets")(d,count,writes,copyCount,copies);
+    Camera(c,[&](CameraProbe& p){p.updates(count,writes,copyCount,copies);});
     Record(c,[&](Context& ctx,Session& s) {
         if (s.descriptorLogFull) return;
         Require(count<=4096 && copyCount<=4096,"descriptor batch too large");
@@ -385,12 +437,108 @@ static void VKAPI_CALL UpdateDescriptorSets(VkDevice d,uint32_t count,const VkWr
             {"src_binding",c.srcBinding},{"src_element",c.srcArrayElement},{"target",Ref(ctx,VK_OBJECT_TYPE_DESCRIPTOR_SET,Handle(c.dstSet))},{"dst_binding",c.dstBinding},{"dst_element",c.dstArrayElement},{"count",c.descriptorCount}}); }
     });
 }
+static VkResult VKAPI_CALL AllocateMemory(VkDevice d,const VkMemoryAllocateInfo* i,const VkAllocationCallbacks* a,VkDeviceMemory* out) {
+    auto c=Get(d);auto r=Next<PFN_vkAllocateMemory>(d,c,"vkAllocateMemory")(d,i,a,out);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.allocate(*out,i->allocationSize,i->memoryTypeIndex);});return r;
+}
+static void VKAPI_CALL FreeMemory(VkDevice d,VkDeviceMemory m,const VkAllocationCallbacks* a) {
+    auto c=Get(d);Camera(c,[&](CameraProbe& p){p.freeMemory(m);});Next<PFN_vkFreeMemory>(d,c,"vkFreeMemory")(d,m,a);
+}
+static VkResult VKAPI_CALL MapMemory(VkDevice d,VkDeviceMemory m,VkDeviceSize offset,VkDeviceSize size,VkMemoryMapFlags flags,void** out) {
+    auto c=Get(d);auto r=Next<PFN_vkMapMemory>(d,c,"vkMapMemory")(d,m,offset,size,flags,out);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.map(m,offset,size,*out);});return r;
+}
+static void VKAPI_CALL UnmapMemory(VkDevice d,VkDeviceMemory m) {
+    auto c=Get(d);Camera(c,[&](CameraProbe& p){p.unmap(m);});Next<PFN_vkUnmapMemory>(d,c,"vkUnmapMemory")(d,m);
+}
+#define MAP2(Name) \
+static VkResult VKAPI_CALL Name(VkDevice d,const VkMemoryMapInfoKHR* i,void** out) { \
+ auto c=Get(d);auto r=Next<PFN_vkMapMemory2KHR>(d,c,"vk" #Name)(d,i,out); \
+ if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.map(i->memory,i->offset,i->size,*out);}); \
+ return r; }
+MAP2(MapMemory2KHR) MAP2(MapMemory2)
+#undef MAP2
+#define UNMAP2(Name) \
+static VkResult VKAPI_CALL Name(VkDevice d,const VkMemoryUnmapInfoKHR* i) { \
+ auto c=Get(d);Camera(c,[&](CameraProbe& p){p.unmap(i->memory);}); \
+ return Next<PFN_vkUnmapMemory2KHR>(d,c,"vk" #Name)(d,i); }
+UNMAP2(UnmapMemory2KHR) UNMAP2(UnmapMemory2)
+#undef UNMAP2
+static VkResult VKAPI_CALL BindBufferMemory(VkDevice d,VkBuffer b,VkDeviceMemory m,VkDeviceSize offset) {
+    auto c=Get(d);auto r=Next<PFN_vkBindBufferMemory>(d,c,"vkBindBufferMemory")(d,b,m,offset);
+    Camera(c,[&](CameraProbe& p){p.bind(b,r==VK_SUCCESS?m:VK_NULL_HANDLE,offset);});return r;
+}
+#define BIND2(Name) \
+static VkResult VKAPI_CALL Name(VkDevice d,uint32_t count,const VkBindBufferMemoryInfo* infos) { \
+ auto c=Get(d);auto r=Next<PFN_vkBindBufferMemory2>(d,c,"vk" #Name)(d,count,infos); \
+ Camera(c,[&](CameraProbe& p){for(uint32_t i=0;i<count;++i)p.bind(infos[i].buffer,r==VK_SUCCESS?infos[i].memory:VK_NULL_HANDLE,infos[i].memoryOffset);}); \
+ return r; }
+BIND2(BindBufferMemory2) BIND2(BindBufferMemory2KHR)
+#undef BIND2
+static VkResult VKAPI_CALL AllocateCommandBuffers(VkDevice d,const VkCommandBufferAllocateInfo* i,VkCommandBuffer* out) {
+    auto c=Get(d);auto r=Next<PFN_vkAllocateCommandBuffers>(d,c,"vkAllocateCommandBuffers")(d,i,out);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){for(uint32_t n=0;n<i->commandBufferCount;++n)p.command(out[n],i->commandPool);});return r;
+}
+static void VKAPI_CALL FreeCommandBuffers(VkDevice d,VkCommandPool pool,uint32_t count,const VkCommandBuffer* commands) {
+    auto c=Get(d);Camera(c,[&](CameraProbe& p){for(uint32_t i=0;i<count;++i)p.freeCommand(commands[i]);});
+    Next<PFN_vkFreeCommandBuffers>(d,c,"vkFreeCommandBuffers")(d,pool,count,commands);
+}
+static VkResult VKAPI_CALL BeginCommandBuffer(VkCommandBuffer cb,const VkCommandBufferBeginInfo* i) {
+    auto c=GetCommand(cb);auto r=CommandNext<PFN_vkBeginCommandBuffer>(cb,c,"vkBeginCommandBuffer")(cb,i);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.begin(cb);});return r;
+}
+static VkResult VKAPI_CALL ResetCommandBuffer(VkCommandBuffer cb,VkCommandBufferResetFlags flags) {
+    auto c=GetCommand(cb);auto r=CommandNext<PFN_vkResetCommandBuffer>(cb,c,"vkResetCommandBuffer")(cb,flags);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.begin(cb);});return r;
+}
+static VkResult VKAPI_CALL ResetCommandPool(VkDevice d,VkCommandPool pool,VkCommandPoolResetFlags flags) {
+    auto c=Get(d);auto r=Next<PFN_vkResetCommandPool>(d,c,"vkResetCommandPool")(d,pool,flags);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.commandPool(pool,false);});return r;
+}
+static void VKAPI_CALL DestroyCommandPool(VkDevice d,VkCommandPool pool,const VkAllocationCallbacks* a) {
+    auto c=Get(d);Camera(c,[&](CameraProbe& p){p.commandPool(pool,true);});Next<PFN_vkDestroyCommandPool>(d,c,"vkDestroyCommandPool")(d,pool,a);
+}
+static void VKAPI_CALL CmdBindDescriptorSets(VkCommandBuffer cb,VkPipelineBindPoint point,VkPipelineLayout layout,uint32_t first,uint32_t count,const VkDescriptorSet* sets,uint32_t dynamicCount,const uint32_t* dynamicOffsets) {
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdBindDescriptorSets>(cb,c,"vkCmdBindDescriptorSets")(cb,point,layout,first,count,sets,dynamicCount,dynamicOffsets);
+    Camera(c,[&](CameraProbe& p){p.bindSets(cb,point,first,count,sets);});
+}
+static void VKAPI_CALL CmdExecuteCommands(VkCommandBuffer cb,uint32_t count,const VkCommandBuffer* children) {
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdExecuteCommands>(cb,c,"vkCmdExecuteCommands")(cb,count,children);
+    Camera(c,[&](CameraProbe& p){p.execute(cb,count,children);});
+}
+#define TEMPLATE(Name) \
+static void VKAPI_CALL Name(VkDevice d,VkDescriptorSet s,VkDescriptorUpdateTemplate t,const void* data) { \
+ auto c=Get(d);Camera(c,[&](CameraProbe& p){p.invalidate(s);});Next<PFN_vkUpdateDescriptorSetWithTemplate>(d,c,"vk" #Name)(d,s,t,data); }
+TEMPLATE(UpdateDescriptorSetWithTemplate) TEMPLATE(UpdateDescriptorSetWithTemplateKHR)
+#undef TEMPLATE
+uint64_t BeforeSubmit(VkDevice d,VkQueue q,uint32_t count,const VkSubmitInfo* infos) noexcept {
+    if(!Enabled())return 0;uint64_t id=0;auto c=Get(d);
+    Camera(c,[&](CameraProbe& p){if(!p.wantsSubmit())return;std::vector<VkCommandBuffer> commands;for(uint32_t i=0;i<count;++i) {
+        Require(infos[i].commandBufferCount<=65536-commands.size(),"camera submit batch limit");
+        for(uint32_t j=0;j<infos[i].commandBufferCount;++j)commands.push_back(infos[i].pCommandBuffers[j]);
+    }id=p.submit(q,uint32_t(commands.size()),commands.data());});return id;
+}
+uint64_t BeforeSubmit2(VkDevice d,VkQueue q,uint32_t count,const VkSubmitInfo2* infos) noexcept {
+    if(!Enabled())return 0;uint64_t id=0;auto c=Get(d);
+    Camera(c,[&](CameraProbe& p){if(!p.wantsSubmit())return;std::vector<VkCommandBuffer> commands;for(uint32_t i=0;i<count;++i) {
+        Require(infos[i].commandBufferInfoCount<=65536-commands.size(),"camera submit2 batch limit");
+        for(uint32_t j=0;j<infos[i].commandBufferInfoCount;++j)commands.push_back(infos[i].pCommandBufferInfos[j].commandBuffer);
+    }id=p.submit(q,uint32_t(commands.size()),commands.data());});return id;
+}
+void AfterSubmit(VkDevice d,uint64_t id,VkResult r) noexcept {if(id)Camera(Get(d),[&](CameraProbe& p){p.result(id,r);});}
+
 PFN_vkVoidFunction Lookup(const char* name,PFN_vkGetDeviceProcAddr fallback) noexcept {
     if (!Enabled() || !name) return nullptr;
     fallbackDispatch.store(fallback);
     // Names of the C++ wrappers omit the Vulkan prefix.
 #define HOOK(name) if (!std::strcmp(nameStr,"vk" #name)) return reinterpret_cast<PFN_vkVoidFunction>(name);
     const char* nameStr=name;
+    HOOK(AllocateMemory) HOOK(FreeMemory) HOOK(MapMemory) HOOK(UnmapMemory)
+    HOOK(MapMemory2KHR) HOOK(UnmapMemory2KHR) HOOK(MapMemory2) HOOK(UnmapMemory2)
+    HOOK(BindBufferMemory) HOOK(BindBufferMemory2) HOOK(BindBufferMemory2KHR)
+    HOOK(AllocateCommandBuffers) HOOK(FreeCommandBuffers) HOOK(BeginCommandBuffer) HOOK(ResetCommandBuffer)
+    HOOK(ResetCommandPool) HOOK(DestroyCommandPool) HOOK(CmdBindDescriptorSets) HOOK(CmdExecuteCommands)
+    HOOK(UpdateDescriptorSetWithTemplate) HOOK(UpdateDescriptorSetWithTemplateKHR)
     HOOK(CreateShaderModule) HOOK(DestroyShaderModule) HOOK(CreateImage) HOOK(DestroyImage)
     HOOK(CreateImageView) HOOK(DestroyImageView) HOOK(CreateBuffer) HOOK(DestroyBuffer)
     HOOK(CreateGraphicsPipelines) HOOK(CreateComputePipelines) HOOK(DestroyPipeline)

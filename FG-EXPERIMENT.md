@@ -144,8 +144,9 @@ Present markers are **CPU observations, not GPU completion or frame identity**.
 The Rockstar renderer exclusion is retained.
 
 This is an inventory stage, **not engine depth/motion/camera capture or game FG**.
-No command recording, resource contents, barriers or submissions are intercepted
-by this recorder. RenderPass2, dynamic rendering, descriptor update templates,
+The inventory recorder does not capture command recording or resource contents.
+The separately requested CPU snapshot probe described below observes selected
+command bindings and submissions without changing GPU work. RenderPass2, dynamic rendering, descriptor update templates,
 shader objects and inline shader modules are not covered. Partial pipeline
 creation failures are not recorded. The session header declares these gaps.
 The recorder adds no GPU commands, waits, usage flags or synchronization, but
@@ -251,3 +252,68 @@ Render-size RG16F images also appear, but the recorded descriptor window has no
 confirmed link identifying one of them as the motion field. Actual buffer values,
 draw/submission state and GPU resource readback still need to be captured and
 validated before any camera/depth/motion profile can be enabled.
+
+### Requested CPU uniform snapshots
+
+The native layer now maintains a separate, bounded camera-probe state even after
+inventory logging stops. It observes memory allocation/mapping, buffer memory
+bindings, descriptor-set lifetimes and graphics descriptor bindings in primary
+and secondary command buffers. A request made after loading the game records up
+to eight distinct 464-byte slices per 100 ms sampling interval from set 0,
+bindings 29/31. This selection is a diagnostic hypothesis from the inventory,
+not a verified camera profile or proof of shader consumption.
+
+Only existing HOST_VISIBLE + HOST_COHERENT mappings are read. The address accounts
+for allocation binding offset, descriptor offset and mapping offset; allocation,
+buffer and set generations prevent reuse of stale handles. Reads use a self
+`process_vm_readv` call so unreadable mappings produce a skipped sample rather
+than a process fault. Noncoherent/unmapped/out-of-range memory is skipped. No
+memory is newly mapped, flushed or invalidated and no GPU commands or waits are
+added. The probe records bytes before the application's queue submission and
+records the submission result separately. GPU writes, concurrent host writes,
+actual draw consumption and completion are **not** established by these samples;
+observations may be stale or torn. They cannot yet be inputs to game FG.
+
+Commands reset/free/pool reset discard prior bindings; secondary command
+references are generation-checked. Descriptor copies and update templates
+invalidate candidate slices instead of guessing their contents. Spill/array
+writes are conservatively unresolved. Dynamic uniform descriptors, newer
+CmdBindDescriptorSets2 commands and push descriptors are not decoded. Ordinary
+legacy bindings are recorded as historical references within a command buffer,
+not as a full draw-state reconstruction. Tracking errors disable only the probe.
+A device supports at most 500,000 tracked objects and 262,144 command/set
+references. Output is capped at 8 MiB per request, 1,024 samples and 30 seconds.
+
+The `camera/support-DEVICE.json` files identify capable devices in the session.
+No buffer contents are written without an explicit request:
+
+```sh
+python3 tools/request-camera.py /private/discovery/session --duration-ms 5000 --samples 256
+python3 tools/analyze-camera.py /private/discovery/session/camera/samples-DEVICE-ID.jsonl \
+  --output /private/matrices.json
+```
+
+The request tool defaults to the presenting device found in the inventory and
+requires a live process. It atomically replaces `camera/request.json`; request
+IDs prevent replay. More windows can be requested without restarting the game.
+If the game stops making Vulkan calls, the window's end record is written when
+calls resume; it will not capture after its deadline. The analyzer interprets
+matrix offsets 0, 64, 128, 192, 272, 336 and 400 as column-major based on the
+previous SPIR-V inspection and retains `camera_verified=false`.
+
+Validation covers exact sampled bytes with nonzero memory-binding, mapping and
+descriptor offsets, primary/secondary commands, QueueSubmit/QueueSubmit2, unmap,
+command-pool reset and operation after the overall inventory log fills. A separate
+state test covers reuse of memory/buffer/set handles, invalid pointers,
+noncoherent mappings and partial mapping bounds. The command-dispatch fallback
+is also exercised with an unwritable discovery directory. The unit test needs
+self-process memory-read permission (some execution sandboxes deny this syscall):
+
+```sh
+build/discovery/camera-state-test /private/new-empty-test-directory
+```
+
+`DLSSFG_METADATA_LIMIT_MIB=1..64` can lower the inventory limit for this regression
+(default 64). It does not disable the separate camera probe. Real RDR2 snapshots
+still require restarting once with this updated library, then arming a window.
+The helper, NR settings, game profile and FG presentation remain unchanged.

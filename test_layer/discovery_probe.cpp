@@ -1,6 +1,8 @@
 // Real Vulkan resource lifetime/dispatch test; deliberately never submits GPU work.
 #include <vulkan/vulkan.h>
 #include <cstdio>
+#include <array>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -8,8 +10,10 @@
 #include <thread>
 #include <vector>
 #define OK(expr) do { auto r=(expr); if(r!=VK_SUCCESS) { fprintf(stderr,"%s = %d at %d\n",#expr,r,__LINE__); std::exit(3); } } while(0)
+#include "camera_probe_gpu.h"
 int main(int argc,char** argv) {
-    VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO}; VkInstance instance{};
+    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};app.apiVersion=VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};ici.pApplicationInfo=&app; VkInstance instance{};
     OK(vkCreateInstance(&ici,nullptr,&instance));
     // Exercise a hook obtained BEFORE device registration, including failed diagnostics.
     auto createBuffer=(PFN_vkCreateBuffer)vkGetInstanceProcAddr(instance,"vkCreateBuffer");
@@ -25,6 +29,7 @@ int main(int argc,char** argv) {
     float priority=1; VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qi.queueFamilyIndex=family; qi.queueCount=1; qi.pQueuePriorities=&priority;
     VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount=1; di.pQueueCreateInfos=&qi;
+    VkPhysicalDeviceSynchronization2Features sync{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES};sync.synchronization2=VK_TRUE;di.pNext=&sync;
     VkDevice device{}; OK(vkCreateDevice(physical,&di,nullptr,&device));
     auto allocate=[&](VkMemoryRequirements req) {
         VkPhysicalDeviceMemoryProperties p{}; vkGetPhysicalDeviceMemoryProperties(physical,&p);
@@ -66,7 +71,7 @@ int main(int argc,char** argv) {
         VkDescriptorSet set{}; OK(vkAllocateDescriptorSets(device,&ai,&set));
         VkDescriptorBufferInfo info{buffer,0,256}; VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet=set; w.dstBinding=3; w.descriptorCount=1; w.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo=&info;
-        const int repeats=argc>1 && !strcmp(argv[1],"limit") && iteration==0?300000:1;
+        const int repeats=argc>1 && iteration==0 && (!strcmp(argv[1],"limit") || !strcmp(argv[1],"camera"))?300000:1;
         for(int j=0;j<repeats;++j) vkUpdateDescriptorSets(device,1,&w,0,nullptr);
         if(iteration==0) OK(vkResetDescriptorPool(device,pool,0));
         else if(iteration==1) OK(vkFreeDescriptorSets(device,pool,1,&set));
@@ -76,6 +81,7 @@ int main(int argc,char** argv) {
     std::vector<std::thread> threads;
     for(int i=0;i<4;++i) threads.emplace_back([&] { for(int j=0;j<32;++j) { VkBuffer b{}; OK(createBuffer(device,&bi,nullptr,&b)); vkDestroyBuffer(device,b,nullptr); } });
     for(auto& t:threads) t.join();
+    if(argc>1 && (!strcmp(argv[1],"camera") || !strcmp(argv[1],"camera-pass"))) CameraGpuTest(physical,device,family,!strcmp(argv[1],"camera"));
     vkDestroyPipeline(device,pipeline,nullptr); vkDestroyShaderModule(device,module,nullptr); vkDestroyShaderModule(device,duplicate,nullptr);
     vkDestroyPipelineLayout(device,pl,nullptr); vkDestroyDescriptorSetLayout(device,layout,nullptr);
     vkDestroyImageView(device,view,nullptr); vkDestroyImage(device,image,nullptr); vkFreeMemory(device,imemory,nullptr);

@@ -46,7 +46,7 @@ modified=backup/'new-manifest.json'; modified.write_text(json.dumps(m,indent=2)+
 install(modified,manifest)
 install(repo/'tools/steam-fg-capture.sh',wrapper); wrapper.chmod(0o755)
 marker.parent.mkdir(parents=True,exist_ok=True)
-marker.write_text('Metadata only; remove this file or set DLSSFG_DISCOVERY=0 to disable.\n')
+marker.write_text('Inventory and requested CPU snapshots; remove this file or set DLSSFG_DISCOVERY=0 to disable.\n')
 print('Layer:',out,'SHA256:',hashlib.sha256(out.read_bytes()).hexdigest())
 print('Rollback: python3',backup/'restore.py')
 print('Takes effect on the next normal Steam launch; running games are untouched.')

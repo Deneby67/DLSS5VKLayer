@@ -925,6 +925,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(
 #define X(name) dc->name = (PFN_##name)next_dpa(*pDevice, #name);
     DEVICE_FN_LIST(X)
 #undef X
+    if(!dc->vkQueueSubmit2) dc->vkQueueSubmit2=(PFN_vkQueueSubmit2)next_dpa(*pDevice,"vkQueueSubmit2KHR");
     dc->table.next_dpa = next_dpa;
     dc->table.Load(*pDevice);
     dc->releaseImages = addedSwapMaint && dc->vkReleaseSwapchainImagesEXT != nullptr;
@@ -945,7 +946,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(
         }
     }
 
-    dlssfg::discovery::Register(*pDevice,next_dpa);
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    if(ic && ic->vkGetPhysicalDeviceMemoryProperties) ic->vkGetPhysicalDeviceMemoryProperties(physicalDevice,&memoryProperties);
+    dlssfg::discovery::Register(*pDevice,next_dpa,memoryProperties);
     std::lock_guard<std::mutex> lk(g_stateMutex);
     g_devices[*pDevice] = dc;
     Log("[layer] vkCreateDevice -> %p on %s (inert=%d enabled=%d)", (void*)*pDevice, deviceName,
@@ -1770,7 +1773,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit(VkQueue queue, uint32_t s
     DeviceChain* dc = DeviceForQueue(queue);
     if (!dc || !dc->vkQueueSubmit) return VK_ERROR_INITIALIZATION_FAILED;
     std::lock_guard<std::mutex> lk(dc->lock);
-    return dc->vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    auto capture=dlssfg::discovery::BeforeSubmit(dc->self,queue,submitCount,pSubmits);
+    auto result=dc->vkQueueSubmit(queue, submitCount, pSubmits, fence);
+    dlssfg::discovery::AfterSubmit(dc->self,capture,result);
+    return result;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit2(VkQueue queue, uint32_t submitCount,
@@ -1778,7 +1784,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueSubmit2(VkQueue queue, uint32_t 
     DeviceChain* dc = DeviceForQueue(queue);
     if (!dc || !dc->vkQueueSubmit2) return VK_ERROR_INITIALIZATION_FAILED;
     std::lock_guard<std::mutex> lk(dc->lock);
-    return dc->vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    auto capture=dlssfg::discovery::BeforeSubmit2(dc->self,queue,submitCount,pSubmits);
+    auto result=dc->vkQueueSubmit2(queue, submitCount, pSubmits, fence);
+    dlssfg::discovery::AfterSubmit(dc->self,capture,result);
+    return result;
 }
 
 static VKAPI_ATTR VkResult VKAPI_CALL Hook_QueueWaitIdle(VkQueue queue) {
@@ -1806,8 +1815,15 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_AcquireNextImageKHR(VkDevice device, 
 // Loader entry points
 // ---------------------------------------------------------------------------
 static PFN_vkVoidFunction VKAPI_CALL DiscoveryNext(VkDevice device,const char* name) {
-    auto* dc=FindDevice(device);
-    return dc && dc->next_dpa ? dc->next_dpa(device,name) : nullptr;
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it=g_devices.find(device);
+    if(it!=g_devices.end())return it->second->next_dpa(device,name);
+    // Command buffers and their device share the Vulkan loader dispatch key.
+    // This path preserves cached command hooks if optional probe setup failed.
+    for(const auto& entry:g_devices)
+        if(*reinterpret_cast<void**>(entry.first)==*reinterpret_cast<void**>(device))
+            return entry.second->next_dpa(entry.first,name);
+    return nullptr;
 }
 static PFN_vkVoidFunction LookupHook(const char* n) {
     if (!std::strcmp(n, "vkCreateInstance")) return (PFN_vkVoidFunction)Hook_CreateInstance;
@@ -1821,7 +1837,7 @@ static PFN_vkVoidFunction LookupHook(const char* n) {
     if (!std::strcmp(n, "vkDestroySwapchainKHR")) return (PFN_vkVoidFunction)Hook_DestroySwapchainKHR;
     if (!std::strcmp(n, "vkAcquireNextImageKHR")) return (PFN_vkVoidFunction)Hook_AcquireNextImageKHR;
     if (!std::strcmp(n, "vkQueueSubmit")) return (PFN_vkVoidFunction)Hook_QueueSubmit;
-    if (!std::strcmp(n, "vkQueueSubmit2")) return (PFN_vkVoidFunction)Hook_QueueSubmit2;
+    if (!std::strcmp(n, "vkQueueSubmit2") || !std::strcmp(n,"vkQueueSubmit2KHR")) return (PFN_vkVoidFunction)Hook_QueueSubmit2;
     if (!std::strcmp(n, "vkQueueWaitIdle")) return (PFN_vkVoidFunction)Hook_QueueWaitIdle;
     if (!std::strcmp(n, "vkQueuePresentKHR")) return (PFN_vkVoidFunction)Hook_QueuePresentKHR;
     return nullptr;
@@ -1835,7 +1851,7 @@ static PFN_vkVoidFunction LookupDeviceHook(const char* n) {
     if (!std::strcmp(n, "vkDestroySwapchainKHR")) return (PFN_vkVoidFunction)Hook_DestroySwapchainKHR;
     if (!std::strcmp(n, "vkAcquireNextImageKHR")) return (PFN_vkVoidFunction)Hook_AcquireNextImageKHR;
     if (!std::strcmp(n, "vkQueueSubmit")) return (PFN_vkVoidFunction)Hook_QueueSubmit;
-    if (!std::strcmp(n, "vkQueueSubmit2")) return (PFN_vkVoidFunction)Hook_QueueSubmit2;
+    if (!std::strcmp(n, "vkQueueSubmit2") || !std::strcmp(n,"vkQueueSubmit2KHR")) return (PFN_vkVoidFunction)Hook_QueueSubmit2;
     if (!std::strcmp(n, "vkQueueWaitIdle")) return (PFN_vkVoidFunction)Hook_QueueWaitIdle;
     if (!std::strcmp(n, "vkQueuePresentKHR")) return (PFN_vkVoidFunction)Hook_QueuePresentKHR;
     return nullptr;
@@ -1902,26 +1918,24 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instan
     if (!std::strcmp(pName, "vkEnumerateInstanceExtensionProperties"))
         return (PFN_vkVoidFunction)vkEnumerateInstanceExtensionProperties;
     if (auto fn = LookupHook(pName)) return fn;
-    if (instance) if (auto fn=dlssfg::discovery::Lookup(pName,DiscoveryNext)) return fn;
+    PFN_vkVoidFunction next=nullptr;
     if (instance) {
         std::lock_guard<std::mutex> lk(g_stateMutex);
         auto it = g_instances.find(instance);
-        if (it != g_instances.end() && it->second.next_gipa) return it->second.next_gipa(instance, pName);
+        if (it != g_instances.end() && it->second.next_gipa) next=it->second.next_gipa(instance, pName);
     }
-    return nullptr;
+    if(next) if(auto fn=dlssfg::discovery::Lookup(pName,DiscoveryNext))return fn;
+    return next;
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     if (!pName) return nullptr;
     if (!std::strcmp(pName, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
     if (auto fn = LookupDeviceHook(pName)) return fn;
-    if (device) if (auto fn=dlssfg::discovery::Lookup(pName,DiscoveryNext)) return fn;
-    if (device) {
-        std::lock_guard<std::mutex> lk(g_stateMutex);
-        auto it = g_devices.find(device);
-        if (it != g_devices.end() && it->second->next_dpa) return it->second->next_dpa(device, pName);
-    }
-    return nullptr;
+    if(!device)return nullptr;
+    auto next=DiscoveryNext(device,pName);
+    if(next) if(auto fn=dlssfg::discovery::Lookup(pName,DiscoveryNext))return fn;
+    return next;
 }
 
 }  // extern "C"
