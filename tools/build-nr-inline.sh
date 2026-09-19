@@ -8,12 +8,15 @@ gccdirs=("$sysroot"/lib/gcc/x86_64-w64-mingw32/*-posix)
 gccdir="${gccdirs[0]}"
 mkdir -p "$out"
 "$PWD/build/capture/renderdoc_1.46/share/renderdoc/plugins/spirv/glslangValidator" -V ngx_capture/nr_color.comp -o "$out/nr_color.spv"
+"$PWD/build/capture/renderdoc_1.46/share/renderdoc/plugins/spirv/glslangValidator" -V ngx_capture/nr_snapshot.comp -o "$out/nr_snapshot.spv"
 python3 - "$out" <<'PY'
 import struct,sys
 from pathlib import Path
-p=Path(sys.argv[1]); b=(p/'nr_color.spv').read_bytes()
-words=struct.unpack('<'+'I'*(len(b)//4),b)
-(p/'nr_color_spv.h').write_text('#pragma once\n#include <cstdint>\nstatic const uint32_t nr_color_spv[]={\n'+','.join(hex(w) for w in words)+'};\n')
+p=Path(sys.argv[1])
+for name in ('nr_color','nr_snapshot'):
+    b=(p/(name+'.spv')).read_bytes()
+    words=struct.unpack('<'+'I'*(len(b)//4),b)
+    (p/(name+'_spv.h')).write_text('#pragma once\n#include <cstdint>\nstatic const uint32_t '+name+'_spv[]={\n'+','.join(hex(w) for w in words)+'};\n')
 PY
 flags=(--target=x86_64-w64-mingw32 --sysroot="$sysroot/x86_64-w64-mingw32"
  -B"$gccdir/" -L"$gccdir" -fuse-ld=lld -static -femulated-tls -std=c++17 -O2 -fms-extensions

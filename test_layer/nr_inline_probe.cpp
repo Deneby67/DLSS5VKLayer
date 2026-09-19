@@ -55,6 +55,8 @@ int main() {
     if(edge.update(true,false) || edge.update(true,true) || edge.update(false,true) ||
        !edge.update(true,true) || edge.update(true,true) || edge.update(false,true) ||
        !edge.update(true,true))return 12;
+    const bool snapshotTest=getenv("DLSSNR_PROBE_SNAPSHOT")!=nullptr;
+    const bool staleSnapshot=getenv("DLSSNR_PROBE_SNAPSHOT_STALE")!=nullptr;
     const bool stress=getenv("DLSSNR_PROBE_STRESS")!=nullptr;
     const bool settingTest=getenv("DLSSNR_PROBE_SETTINGS")!=nullptr;
     InlineSettings testSettings;
@@ -141,6 +143,14 @@ int main() {
         // Supply real geometric guidance for this synthetic plane, not game defaults.
         // The stand-in path needs none; direct SR needs a depth image.
     }
+    InlineArm captureArm;
+    if(settingTest || snapshotTest) {
+        captureArm.configure();
+        auto token=(ULONGLONG(*)())GetProcAddress(GetModuleHandleW(L"vulkan-1.dll"),"DlssNrArmToken");
+        if(!token || !captureArm.configured)return 14;
+        captureArm.token=token();
+        if(!captureArm.set(true))return 14;
+    }
     auto before=ngx_capture::Snapshot(&p);
     unsigned changed=0,high=0,alpha=0;
     const unsigned frameCount=stress?130:settingTest?8:armCycle?4:3;
@@ -173,7 +183,19 @@ int main() {
             }
             Sleep(275);
         }
-        if(!BeginCmd(context.cmdEval)) return 6;
+        if((snapshotTest && frame==0) || (settingTest && frame==7)) {
+            std::wstring path=captureArm.file;
+            path=path.substr(0,path.find_last_of(L"/\\")+1)+L"hdr-capture.request";
+            FILE* f=_wfopen(path.c_str(),L"w");if(!f)return 14;
+            fprintf(f,"%lu %llu\n",GetCurrentProcessId(),captureArm.token+(staleSnapshot?1:0));fclose(f);
+            if(settingTest)Sleep(550);
+        }
+        if(snapshotTest)Sleep(550);
+        if(snapshotTest && frame==0) {
+            if(vkResetCommandBuffer(context.cmdEval,0)!=VK_SUCCESS)return 14;
+            VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            if(vkBeginCommandBuffer(context.cmdEval,&bi)!=VK_SUCCESS)return 14;
+        } else if(!BeginCmd(context.cmdEval)) return 6;
         for(auto* i:{&color,&motion,&exposure,&depth})TransitionImage(context,context.cmdEval,*i,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         if(realMode)TransitionImage(context,context.cmdEval,output,VK_IMAGE_LAYOUT_GENERAL,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,

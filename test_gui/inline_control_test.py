@@ -9,6 +9,9 @@ import unittest
 spec=importlib.util.spec_from_file_location('control',Path(__file__).resolve().parents[1]/'tools/control-nr-inline.py')
 control=importlib.util.module_from_spec(spec);spec.loader.exec_module(control)
 
+spec2=importlib.util.spec_from_file_location('capture',Path(__file__).resolve().parents[1]/'tools/capture-nr-hdr.py')
+capture=importlib.util.module_from_spec(spec2);spec2.loader.exec_module(capture)
+
 class Sessions(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
@@ -26,6 +29,20 @@ class Sessions(unittest.TestCase):
         record.write_text(json.dumps({'installed_hashes':{str(dll):hashlib.sha256(b'fixture').hexdigest()}}))
     def status(self):return control.status(self.home,proc_root=self.proc)
     def command(self,mode,token='900'):return control.control(self.home,str(self.log),mode,self.proc,token)
+    def test_hdr_request_requires_active_current_session(self):
+        with self.assertRaises(ValueError):capture.request(self.home,proc_root=self.proc)
+        self.command('on')
+        with self.log.open('a') as f:f.write('[nr-inline] arm-state enabled\n[nr-inline] recorded NR-before-SR calls=1\n')
+        r=capture.request(self.home,proc_root=self.proc)
+        self.assertEqual(r['status'],'requested')
+        self.assertEqual(self.log.with_name('hdr-capture.request').read_text(),'42 900\n')
+        with self.assertRaises(ValueError):capture.request(self.home,proc_root=self.proc)
+    def test_hdr_request_rejects_old_mapped_dll(self):
+        self.command('on')
+        with self.log.open('a') as f:f.write('[nr-inline] arm-state enabled\n[nr-inline] recorded NR-before-SR calls=1\n')
+        (self.p/'maps').write_text(self.mapping.rstrip()+' (deleted)\n')
+        with self.assertRaises(ValueError):capture.request(self.home,proc_root=self.proc)
+        self.assertFalse(self.log.with_name('hdr-capture.request').exists())
     def test_discovery_does_not_arm(self):
         s=self.status();self.assertEqual(s['status'],'off');self.assertTrue(s['can_enable']);self.assertFalse(self.log.with_name('arm.txt').exists())
     def test_request_ack_and_disable(self):

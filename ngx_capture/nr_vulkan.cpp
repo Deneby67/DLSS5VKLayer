@@ -10,6 +10,7 @@
 #include "bootstrap_trace.h"
 #include "nr_arm.h"
 #include "nr_settings.h"
+#include "nr_snapshot.h"
 #include <vulkan/vulkan_win32.h>
 namespace {
 using namespace dlssnr;
@@ -56,13 +57,15 @@ BOOL CALLBACK Resolve(PINIT_ONCE,void*,void**) {
 bool resolve(){return InitOnceExecuteOnce(&once,Resolve,nullptr,nullptr);}
 struct Device { VkInstance instance{}; VkPhysicalDevice physical{}; std::set<uint32_t> singleQueues; bool bda=false,extAddress=false; };
 struct Pool { VkDevice device{}; uint32_t family=~0u; };
-struct Command { VkDevice device{}; VkCommandPool pool{}; uint32_t family=~0u; bool usable=false,used=false; };
+struct Command { VkDevice device{}; VkCommandPool pool{}; uint32_t family=~0u; bool usable=false,used=false,oneTime=false; };
 std::map<VkPhysicalDevice,VkInstance> physicals;
 std::map<VkDevice,Device> devices;
 std::map<VkCommandPool,Pool> pools;
 std::map<VkCommandBuffer,Command> commands;
 NrColorBridge bridge;
 NgxSnippet nr;
+NrSnapshot snapshot;
+float loggedSharpness=-1;
 bool attempted=false,disabled=false;
 std::set<std::string> skipped;
 bool Skip(const char* why) {if(skipped.insert(why).second) Log("[nr-inline] bypass: %s",why);return false;}
@@ -168,7 +171,6 @@ bool Process(VkCommandBuffer cmd,const void* handle,const void* params,NVSDK_NGX
     if(!bridge.prepare(cmd,(VkImageView)ci.view,(VkImageView)ei.view)) {
         disabled=true;Log("[nr-inline] disabled: color descriptor allocation failed (%zu command buffers)",bridge.sets.size());return false;
     }
-    NgxSetSharpness(nr,settings.sharpness);
     bridge.dispatch(cmd,0,pre);
     TransitionImage(bridge.c,cmd,bridge.model,VK_IMAGE_LAYOUT_GENERAL,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,
         VK_ACCESS_SHADER_WRITE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -178,11 +180,21 @@ bool Process(VkCommandBuffer cmd,const void* handle,const void* params,NVSDK_NGX
     // This NR adapter uses its own verified 16-slot parameter implementation.
     nr.params->Set("DLSSNR.Jitter.Offset.X",jx); nr.params->Set("DLSSNR.Jitter.Offset.Y",jy);
     nr.params->Set("JitterOffsetX",jx); nr.params->Set("JitterOffsetY",jy);
+    // Resource defaults include Sharpness=0; apply runtime controls last.
+    NgxSetSharpness(nr,settings.sharpness);
+    float effectiveSharpness=-1;
+    nr.params->Get("Sharpness", &effectiveSharpness);
+    if(effectiveSharpness!=loggedSharpness) {
+        Log("[nr-inline] evaluate Sharpness requested=%.4f effective=%.4f",settings.sharpness,effectiveSharpness);
+        loggedSharpness=effectiveSharpness;
+    }
     if(!NgxEvaluatePass(nr,activeTuning,cmd)) {disabled=true;Log("[nr-inline] disabled: NGX evaluation failed");return false;}
     resetHistory=false;
     TransitionImage(bridge.c,cmd,bridge.model,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     bridge.dispatch(cmd,1,pre);
+    snapshot.record(bridge,realGdpa,cmd,command.oneTime,(VkImageView)ci.view,(VkImageView)ei.view,
+                    arm.file,arm.token,accepted+1,pre,effectiveSharpness,tuningCache[activeTuning]);
     output=ToResource(bridge.restored,false); ++accepted;
     if(accepted==1 || accepted%600==0) Log("[nr-inline] recorded NR-before-SR calls=%u",accepted);
     return true;
@@ -196,6 +208,7 @@ extern "C" __declspec(dllexport) uint32_t DlssNrEvaluate(void* cmd,const void* h
     NVSDK_NGX_Resource_VK replacement{};
     const DWORD last=GetLastError(); bool processed=false;
     try {
+        snapshot.poll();
         const bool validSettings=settings.read();
         bool requested=arm.allow();
         if(InlineF2(f2) && arm.configured) {
@@ -383,7 +396,7 @@ extern "C" VkResult VKAPI_CALL NrBegin(VkCommandBuffer cmd,const VkCommandBuffer
     resolve();
     auto result=((PFN_vkBeginCommandBuffer)GetProcAddress(nativeLoader,"vkBeginCommandBuffer"))(cmd,info);
     if(enabled && result==VK_SUCCESS) {Lock lock(stateLock); auto it=commands.find(cmd);
-        if(it!=commands.end()) {it->second.usable=!(info->flags&VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT) && !info->pInheritanceInfo;it->second.used=false;}}
+        if(it!=commands.end()) {it->second.usable=!(info->flags&VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT) && !info->pInheritanceInfo;it->second.used=false;it->second.oneTime=(info->flags&VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)!=0;}}
     trace.done(result);return result;
 }
 extern "C" void VKAPI_CALL NrFree(VkDevice d,VkCommandPool pool,uint32_t n,const VkCommandBuffer* cmds) {
@@ -403,6 +416,7 @@ extern "C" void VKAPI_CALL NrDestroyDevice(VkDevice d,const VkAllocationCallback
         Lock lock(renderLock);
         if(d==nrDevice) {
             if(vkDeviceWaitIdle) vkDeviceWaitIdle(d);
+            snapshot.poll(); snapshot.shutdown();
             NgxTeardown(nr,d); bridge.shutdown(); disabled=true;
         }
         Lock state(stateLock); devices.erase(d);
@@ -436,7 +450,13 @@ extern "C" VkResult VKAPI_CALL NrSubmit(VkQueue q,uint32_t n,const VkSubmitInfo*
     BootstrapTrace trace("vkQueueSubmit",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
     auto fn=(PFN_vkQueueSubmit)GetProcAddress(nativeLoader,"vkQueueSubmit");
-    auto result=fn(q,n,s,f);trace.done(result);return result;
+    auto result=fn(q,n,s,f);
+    if(result==VK_SUCCESS && snapshot.awaitSubmit.load()) {
+        Lock lock(renderLock);
+        for(uint32_t i=0;i<n;++i)for(uint32_t j=0;j<s[i].commandBufferCount;++j)
+            if(s[i].pCommandBuffers[j]==snapshot.command)snapshot.submitted(q);
+    }
+    trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrWait(VkDevice d,uint32_t n,const VkFence* f,VkBool32 all,uint64_t timeout) {
     BootstrapTrace trace("vkWaitForFences",bootstrap);
@@ -480,6 +500,7 @@ static PFN_vkVoidFunction Wrap(const char* n,PFN_vkVoidFunction original) {
     HOOK("vkCreateCommandPool",NrCreatePool) HOOK("vkDestroyCommandPool",NrDestroyPool)
     HOOK("vkAllocateCommandBuffers",NrAllocate) HOOK("vkFreeCommandBuffers",NrFree)
     HOOK("vkBeginCommandBuffer",NrBegin) HOOK("vkDestroyDevice",NrDestroyDevice)
+    HOOK("vkQueueSubmit",NrSubmit)
 #undef HOOK
     return original;
 }

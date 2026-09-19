@@ -3,28 +3,17 @@
 The active experiment is **DLSS 5 NR → the game's existing DLSS SR**. FG work is
 deferred. Nothing creates generated frames or replaces the game's presentation.
 
-**Runtime status, 2026-09-19: native-loader startup reached a real RDR2 scene;
-NR bypassed safely.** The user reached a scene with the corrected native loader
-chain. Arming NR reported an unavailable device context and left original SR
-unchanged. A read-only snapshot showed all tracked command buffers belonged to
-a device missing from the device table; the separately observed device had BDA
-and one queue in family 0. NR was disarmed again and the user closed the game.
-No NR-before-SR gameplay or visual improvement has been demonstrated yet.
+**Runtime status, 2026-09-19:** the native-loader adapter runs in a real RDR2
+scene, with working F2 activation and user-confirmed normal FPS. Recorded-call
+counts demonstrate CPU dispatch, not image quality. The user reports a weak NR
+effect. The HDR residual compositor is still experimental and may suppress
+brightness edits; it has not been validated against the final game image.
 
-Core/KHR physical-device-group enumeration is now tracked, with mapping cleanup
-on instance destruction. The next real RDR2 launch confirmed it uses core group
-enumeration, and the main device is now tracked with one queue in its render
-family. It still reports no KHR/core BDA feature. The game executable references
-`VK_EXT_buffer_device_address`, which was neither recognized nor augmented by
-the previous adapter. NR remains disarmed in that running game.
-
-The EXT candidate recognizes that feature and can enable it when omitted and
-supported; it never adds KHR alongside EXT and still respects explicit false
-feature declarations. Separate EXT fixtures found that both the NR and existing
-SR DLL select the EXT address command but pass the KHR-only memory-allocation
-address flag: NR alone emitted two Validation errors, actual SR emitted four.
-The scoped allocation adaptation below removes those errors without changing
-pixel output. Actual RDR2 use of this candidate still needs a fresh launch.
+The adapter tracks core/KHR physical-device groups and enables the supported EXT
+BDA feature when omitted. Both NR and SR DLLs incorrectly supply a KHR allocation
+flag on this EXT path; a scoped NGX-only adaptation passes the isolated gates.
+Runtime sharpness is now applied **after** resource defaults, which previously
+reset it to zero. A GPU snapshot fixture checks the effective value at evaluate.
 
 The shim preserves the game's native prefix loader using a private, hash-pinned
 sibling copy, `dlssnr_system_vulkan.dll`; the prefix stays untouched. The two old
@@ -346,3 +335,50 @@ Btrfs mount, with an exact undeleted mapped path and inode plus a matching
 installed SHA-256. Other filesystems, changed contents and replaced/deleted DLLs
 still require a restart. This fixes a false restart warning observed with the
 current live RDR2 session; no game DLL change is needed for this controller fix.
+
+## One-shot HDR diagnosis
+
+`tools/capture-nr-hdr.py` discovers exactly one running, current-installed RDR2
+session with NR actively recording. It writes a PID/token-bound request beside
+that session's adapter log. It neither enables NR nor changes Rendering settings.
+The process accepts one capture; repeated requests and stale tokens are rejected.
+A newly installed DLL requires a full game restart first.
+
+```sh
+python3 tools/capture-nr-hdr.py
+python3 tools/analyze-nr-hdr.py /path/to/native-inline/run-SESSION
+```
+
+The adapter samples original RGBA16F HDR, the encoded NR input, raw NR output,
+and restored HDR in one compute dispatch before SR. It also reads the actual
+exposure texel, pre-exposure and effective sharpness. Game images retain their
+layouts and are never copied through transfer operations or modified by the
+capture. The source images must satisfy the same shader-read contract as NR.
+
+Only a primary ONE_TIME_SUBMIT recording is captured: reusable recordings remain
+uncaptured with a reason in the log. A fence submitted after the captured
+`vkQueueSubmit` batch proves completion; a shader-to-host barrier and coherent
+memory provide CPU visibility. There is no queue/device wait in the capture.
+Submit2-only paths are currently outside this diagnostic subset (no unconfirmed
+memory is read). A discarded/unsubmitted command buffer produces no snapshot.
+All diagnostic GPU objects stay alive until device-idle destruction. After one
+request, no more capture dispatches are recorded. Allocations are absent until
+requested; a one-time file write can cause a brief hitch. At 2293x960 the four
+FP16 images use about 70 MiB; not a continuous capture path.
+
+`hdr-snapshot.json` is the completion marker, written after `hdr-snapshot.bin`.
+The binary starts with four little-endian floats (exposure, pre-exposure,
+effective sharpness, GPU-written marker 1), then four planar RGBA16F images at
+`first + i*stride`. JSON records the NR call number, session, extents and tuning.
+Raw values are preserved; NaN/invalid exposure is explicitly reported.
+
+The analyzer saves original-resolution previews, a labeled comparison, and a
+JSON report. It checks CPU references of both shader transforms, reports changes
+in raw NR and the reconstructed display proxy, and measures the projection of
+the retained linear edit onto the model edit, broken down by exposed brightness.
+This coefficient is **not** a universal perceptual quality percentage. The
+previews use our HDR proxy and do not include SR or the game's final tonemapping.
+Tests prove identity/attenuation math and invalid-exposure handling; Vulkan
+fixtures verify original pixel identity, one-shot GPU completion, stale-token
+rejection, non-replayable recording selection, and effective sharpness=0.4.
+The compositor formula itself is unchanged pending actual game-frame evidence.

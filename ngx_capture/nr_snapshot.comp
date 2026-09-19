@@ -1,0 +1,25 @@
+#version 450
+// Read-only observation after the restored HDR dispatch, before native SR.
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform sampler2D originalColor;
+layout(binding=1) uniform sampler2D encodedColor;
+layout(binding=2) uniform sampler2D modelColor;
+layout(binding=3) uniform sampler2D restoredColor;
+layout(binding=4) uniform sampler2D exposureTexture;
+layout(binding=5,std430) writeonly buffer Original { uvec2 original[]; };
+layout(binding=6,std430) writeonly buffer Encoded { uvec2 encoded[]; };
+layout(binding=7,std430) writeonly buffer Model { uvec2 model[]; };
+layout(binding=8,std430) writeonly buffer Restored { uvec2 restored[]; };
+layout(binding=9,std430) writeonly buffer Metadata { vec4 metadata; };
+layout(push_constant) uniform Push { uint width; uint height; float preExposure; float sharpness; } p;
+uvec2 half4(vec4 v) { return uvec2(packHalf2x16(v.xy),packHalf2x16(v.zw)); }
+void main() {
+    ivec2 pos=ivec2(gl_GlobalInvocationID.xy);
+    if(pos.x>=p.width || pos.y>=p.height)return;
+    uint i=uint(pos.y)*p.width+uint(pos.x);
+    original[i]=half4(texelFetch(originalColor,pos,0));
+    encoded[i]=half4(texelFetch(encodedColor,pos,0));
+    model[i]=half4(texelFetch(modelColor,pos,0));
+    restored[i]=half4(texelFetch(restoredColor,pos,0));
+    if(i==0)metadata=vec4(texelFetch(exposureTexture,ivec2(0),0).r,p.preExposure,p.sharpness,1);
+}
