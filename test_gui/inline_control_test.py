@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -22,7 +23,7 @@ class Sessions(unittest.TestCase):
         self.mapping=f'1000-2000 r--p 0 {os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x} {st.st_ino} {dll}\n'
         (self.p/'maps').write_text(self.mapping)
         record=self.home/'.config/dlssnr/native-inline-install.json';record.parent.mkdir(parents=True)
-        record.write_text(json.dumps({'installed_hashes':{str(dll):'fixture'}}))
+        record.write_text(json.dumps({'installed_hashes':{str(dll):hashlib.sha256(b'fixture').hexdigest()}}))
     def status(self):return control.status(self.home,proc_root=self.proc)
     def command(self,mode,token='900'):return control.control(self.home,str(self.log),mode,self.proc,token)
     def test_discovery_does_not_arm(self):
@@ -39,6 +40,20 @@ class Sessions(unittest.TestCase):
         (self.p/'maps').write_text(self.mapping.rstrip()+' (deleted)\n')
         self.assertEqual(self.status()['status'],'restart')
         with self.assertRaises(ValueError):self.command('on')
+    def test_btrfs_subvolume_device_number(self):
+        fields=self.mapping.split(None,5);fields[3]='00:ffff'
+        (self.p/'maps').write_text(' '.join(fields))
+        (self.p/'mountinfo').write_text('1 0 0:1 / / rw - btrfs /dev/test rw\n')
+        self.assertEqual(self.status()['status'],'off')
+        self.assertTrue(self.command('on')['requested_on'])
+        # An in-place edit must not pass the Btrfs exception.
+        (self.home/'vulkan-1.dll').write_bytes(b'changed')
+        self.assertEqual(self.status()['status'],'restart')
+    def test_other_filesystem_device_mismatch_still_rejected(self):
+        fields=self.mapping.split(None,5);fields[3]='00:ffff'
+        (self.p/'maps').write_text(' '.join(fields))
+        (self.p/'mountinfo').write_text('1 0 0:1 / / rw - ext4 /dev/test rw\n')
+        self.assertEqual(self.status()['status'],'restart')
     def test_dead_process_cannot_be_controlled(self):
         (self.p/'fd/7').unlink()
         self.assertFalse(self.status()['ready'])

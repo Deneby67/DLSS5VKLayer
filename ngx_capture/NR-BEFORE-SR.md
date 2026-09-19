@@ -339,3 +339,10 @@ Verification covers the Qt panel's asynchronous command transport, on/off and
 restart states, existing shared-memory bindings, and controller cases including
 stale/dead/ambiguous sessions, stale DLL mappings, rejected tokens and turning
 off after a terminal failure or oversized log. None of these tests arms RDR2.
+
+On Btrfs, the mapped file's superblock device number can differ from `stat`'s
+subvolume device number. The controller accepts this case only on the process's
+Btrfs mount, with an exact undeleted mapped path and inode plus a matching
+installed SHA-256. Other filesystems, changed contents and replaced/deleted DLLs
+still require a restart. This fixes a false restart warning observed with the
+current live RDR2 session; no game DLL change is needed for this controller fix.

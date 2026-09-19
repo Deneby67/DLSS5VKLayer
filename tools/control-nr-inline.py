@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Session-bound NR-before-DLSS control; also the JSON backend for the Qt panel."""
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -45,6 +46,22 @@ def live_sessions(home, proc_root=Path('/proc')):
     return sessions
 
 
+def btrfs_path(proc, path):
+    # Select the longest enclosing mount; /proc/maps can report the Btrfs
+    # superblock device while stat reports a subvolume's anonymous device.
+    try:
+        candidates=[]
+        for line in read(proc/'mountinfo').splitlines():
+            left,right=line.split(' - ',1)
+            raw=left.split()[4]
+            mount=Path(re.sub(r'\\([0-7]{3})',lambda m:chr(int(m.group(1),8)),raw))
+            if path.is_relative_to(mount):
+                candidates.append((len(mount.parts),right.split()[0]))
+        return bool(candidates) and max(candidates)[1]=='btrfs'
+    except (OSError,ValueError,IndexError):
+        return False
+
+
 def mapped_install(proc, record):
     """A replaced DLL must take effect before this UI can enable processing."""
     mappings=read(proc/'maps').splitlines()
@@ -59,9 +76,17 @@ def mapped_install(proc, record):
             if len(fields)!=6 or fields[5]!=name:
                 continue
             major,minor=(int(s,16) for s in fields[3].split(':'))
-            if int(fields[4])==st.st_ino and (major,minor)==(os.major(st.st_dev),os.minor(st.st_dev)):
+            if int(fields[4])!=st.st_ino:
+                continue
+            if (major,minor)==(os.major(st.st_dev),os.minor(st.st_dev)):
                 found=True
                 break
+            # Do not relax inode or exact path/deleted-file checks. Restrict the
+            # device-number exception to Btrfs and the recorded installed bytes.
+            if btrfs_path(proc,path):
+                with path.open('rb') as f:
+                    found=hashlib.file_digest(f,'sha256').hexdigest()==record['installed_hashes'][name]
+                if found:break
         if not found:
             return False
     return bool(record.get('installed_hashes'))
