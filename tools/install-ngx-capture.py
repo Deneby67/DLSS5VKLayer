@@ -14,6 +14,10 @@ p.add_argument('--game', type=Path, default=Path.home()/'.steam/debian-installat
 p.add_argument('--proton', type=Path, default=Path('/opt/Proton-11.0-2c-Zen5-BP18-Mimalloc'))
 p.add_argument('--inline-nr', action='store_true', help='Install the tested experimental NR-before-SR Vulkan shim')
 a = p.parse_args()
+if a.inline_nr:
+    p.error('Inline NR installation is disabled: this Vulkan shim hung RDR2 before the main menu. '
+            'Offscreen validation passed but does not establish game startup compatibility. '
+            'Diagnose and validate startup before re-enabling installation.')
 repo = Path(__file__).resolve().parents[1]
 home = Path.home()
 proxy = repo/'build/ngx-capture/version.dll'

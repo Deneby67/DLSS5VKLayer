@@ -6,8 +6,8 @@ remain available. No NVIDIA binaries are included in the repository.
 
 **Current scope: FG is deferred at the user's request.** Active development is
 [DLSS 5 NR → the game's DLSS SR](ngx_capture/NR-BEFORE-SR.md). This opt-in chain
-has passed isolated GPU validation with the actual RDR2 SR DLL and is installed
-for the next game launch; in-game scene verification remains pending. The FG
+passed isolated GPU validation with the actual RDR2 SR DLL, but caused a hang
+before RDR2's main menu and was rolled back. Startup diagnosis remains open. The FG
 research below is retained for reference. The expensive draw-discovery path
 remains disabled.
 

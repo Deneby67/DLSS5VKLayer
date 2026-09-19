@@ -3,8 +3,9 @@
 By default this is a diagnostic **observer**. The active experiment now adds
 **DLSS 5 NR → the game's DLSS SR** through an explicitly selected Vulkan shim;
 see [NR-BEFORE-SR.md](NR-BEFORE-SR.md). FG is deferred. The new path has isolated
-GPU validation, including the game's actual SR DLL, but awaits scene validation
-inside RDR2. An SDR display does not imply that the pre-SR color is SDR.
+GPU validation, including the game's actual SR DLL, but hung RDR2 before its
+main menu. It has been rolled back and reinstallation is disabled pending startup
+diagnosis. An SDR display does not imply that the pre-SR color is SDR.
 
 The application-local `version.dll` forwards all 16 exports to a local copy of
 the selected Proton's original version library, `dlssfg_system_version.dll`.

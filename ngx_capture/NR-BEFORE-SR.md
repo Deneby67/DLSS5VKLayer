@@ -3,6 +3,16 @@
 The active experiment is **DLSS 5 NR → the game's existing DLSS SR**. FG work is
 deferred. Nothing creates generated frames or replaces the game's presentation.
 
+**Runtime status, 2026-09-19: rolled back.** RDR2 hung before the main menu with
+the Vulkan shim installed. Its journal reached successful BDA-enabled device
+creation, and the NGX observer attached all four hooks, but no SR creation or
+NR processing was recorded. The process had already exited when inspected, so
+no blocked-thread stack was available. The exact cause is unresolved; the
+offscreen tests below do not establish startup compatibility with the game.
+The previous observer and launch wrapper were restored and the application-local
+Vulkan DLL/inline selection marker removed. Reinstallation through the installer
+is disabled until startup has been diagnosed and validated.
+
 The NGX observer dispatches known SuperSampling feature evaluations to an
 application-local Vulkan forwarding shim. The shim records HDR encoding, NR,
 HDR recomposition and a shader-read barrier into the same command buffer,
@@ -76,7 +86,7 @@ python3 tools/run-nr-inline-probe.py --inline --validation --case bda-auto
 python3 tools/run-nr-inline-probe.py --inline --validation --case real-sr
 bash tools/build-ngx-capture.sh
 python3 tools/test-ngx-capture.py
-python3 tools/install-ngx-capture.py --inline-nr
+# Installation is currently blocked by the known game-startup regression.
 ```
 
 Builds use at most 24 linker workers. Tests use a separate prefix and synthetic
@@ -99,7 +109,8 @@ Tested NR DLL SHA-256:
 Tested game SR DLL SHA-256:
 `3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983`.
 
-Private test artifacts and NVIDIA DLLs remain outside Git. Installation requires
+Private test artifacts and NVIDIA DLLs remain outside Git. Once startup is fixed,
+installation requires
 matching successful validation artifacts and backs up every replaced file,
 including the previous NGX observer, wrapper and selection markers. Unknown
 existing Vulkan DLLs are never overwritten. The selected Proton is unchanged.
