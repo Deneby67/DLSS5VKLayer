@@ -55,7 +55,7 @@ for case in ('bootstrap-forward','bootstrap-track','bootstrap-bda','bootstrap-ws
 stamp=datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
 backup=home/'.local/share/dlssnr/backups'/('bootstrap-'+stamp)
 logs=home/'.local/state/dlssnr'/('bootstrap-'+stamp)
-plan=dict(mode='forward_only_no_nr_no_bda_augmentation',shim_sha256=sha(shim),
+plan=dict(mode='forward_only_no_nr_no_bda_augmentation_no_presentation_nr',shim_sha256=sha(shim),
           previous_wrapper_sha256=sha(wrapper),logs=str(logs),rollback=str(backup/'restore.py'),
           tests={case:str(reports[case][0]) for case in ('bootstrap-forward','bootstrap-track','bootstrap-bda','bootstrap-wsi','launcher','disabled')})
 if a.dry_run:
@@ -64,9 +64,10 @@ backup.mkdir(parents=True,mode=0o700)
 logs.mkdir(parents=True,mode=0o700)
 shutil.copy2(wrapper,backup/'previous-wrapper')
 # Force NR off independently in both the observer and shim. Existing presentation
-# selection, Proton, game arguments and version.dll are retained unchanged.
+# layer is disabled for startup isolation; Proton, game arguments and version.dll stay unchanged.
 script='\n'.join(['#!/usr/bin/env bash','set -euo pipefail',
     'export DLSSNR_INLINE=0 DLSSNR_BOOTSTRAP=forward',
+    'export VKLayer_DLSS5=0 DLSSNR_ENABLE=0',
     'bootstrap_root='+shlex.quote(str(logs)),
     'bootstrap_run=$(mktemp -d "$bootstrap_root/run-XXXXXXXX")',
     'export DLSSNR_BOOTSTRAP_DIR="Z:$bootstrap_run"',

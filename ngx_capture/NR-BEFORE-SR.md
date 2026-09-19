@@ -133,8 +133,8 @@ Proton, backs up the launch wrapper, installs the tested Vulkan DLL, forces
 `DLSSNR_INLINE=0` and selects `DLSSNR_BOOTSTRAP=forward`. `DlssNrEvaluate` also
 unconditionally bypasses NR in every bootstrap mode, even if invoked by a caller.
 Device creation receives the original pointers and values; no BDA augmentation
-or command tracking runs in forward mode. Existing presentation-layer selection
-is preserved. Each launch gets its own private log directory.
+or command tracking runs in forward mode. Presentation NR is disabled during
+this startup diagnostic. Each launch gets its own private log directory.
 
 The other isolated fixture modes are `bootstrap-track` (device/command tracking
 only) and `bootstrap-bda` (tracking plus BDA augmentation); neither runs NR.
@@ -171,3 +171,16 @@ Installation requires matching hashes for all six successful validation gates,
 the known game executable, working observer and recorded launch wrapper. The
 rollback script is written before changes and refuses to overwrite later edits.
 A real RDR2 restart and menu check is still required for this diagnostic build.
+
+### Launcher startup observation
+
+The first two diagnostic launches stopped before RDR2/PlayRDR2. A live debugger
+snapshot of Proton's steam.exe showed both threads waiting on win32u's
+`display_lock`; its owner was the main thread, which was itself blocked trying
+to acquire it. The application-local Vulkan DLL and winevulkan PE module were
+not mapped. The previous native DLSSNR Vulkan layer was mapped, alongside the
+Steam overlay. This identifies a display initialization self-deadlock, but not
+its trigger or a causal link to either layer. Private stacks remain under build/.
+The diagnostic launch now disables presentation NR as well (`VKLayer_DLSS5=0`,
+`DLSSNR_ENABLE=0`) to isolate that path on the next user-controlled restart.
+The previous working launch can still be restored exactly using its backup.
