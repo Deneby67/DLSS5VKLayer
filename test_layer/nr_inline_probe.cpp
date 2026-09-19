@@ -51,7 +51,8 @@ int main() {
     const bool armCycle=getenv("DLSSNR_PROBE_ARM_CYCLE")!=nullptr;
     const bool realMode=getenv("DLSSNR_PROBE_REAL_SR")!=nullptr;
     const unsigned ow=realMode?W*3/2:W,oh=realMode?H*3/2:H;
-    if(!CreateContext(context,getenv("DLSSNR_PROBE_BDA_AUTO")==nullptr)) return 2;
+    const char* groups=getenv("DLSSNR_PROBE_GROUPS");
+    if(!CreateContext(context,getenv("DLSSNR_PROBE_BDA_AUTO")==nullptr,groups?unsigned(atoi(groups)):0)) return 2;
     auto create=(PFN_vkCreateDebugUtilsMessengerEXT)g_gipa(context.instance,"vkCreateDebugUtilsMessengerEXT");
     VkDebugUtilsMessengerEXT messenger{};
     VkDebugUtilsMessengerCreateInfoEXT mi{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};

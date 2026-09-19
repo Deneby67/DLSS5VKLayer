@@ -89,7 +89,9 @@ bool Process(VkCommandBuffer cmd,const void* handle,const void* params,NVSDK_NGX
         if(cb==commands.end() || !cb->second.usable || cb->second.used) return Skip("untracked, simultaneous or already-used command recording");
         command=cb->second;
         auto dev=devices.find(command.device);
-        if(dev==devices.end() || !dev->second.bda || !dev->second.singleQueues.count(command.family)) return Skip("device context, bufferDeviceAddress or single-queue family unavailable");
+        if(dev==devices.end()) return Skip("command buffer belongs to an unobserved device");
+        if(!dev->second.bda) return Skip("command device has no enabled bufferDeviceAddress");
+        if(!dev->second.singleQueues.count(command.family)) return Skip("command family does not have exactly one enabled queue");
         device=dev->second;
         cb->second.used=true; // One SR replacement per recording; descriptor sets cannot be overwritten mid-recording.
     }
@@ -172,11 +174,41 @@ extern "C" VkResult VKAPI_CALL NrEnumerate(VkInstance i,uint32_t* n,VkPhysicalDe
     if(enabled && p && (r==VK_SUCCESS || r==VK_INCOMPLETE)) {Lock lock(stateLock); for(unsigned j=0;j<*n;++j) physicals[p[j]]=i;}
     trace.done(r);return r;
 }
+static VkResult EnumerateGroups(VkInstance i,uint32_t* count,VkPhysicalDeviceGroupProperties* groups,const char* name) {
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkEnumeratePhysicalDeviceGroups)realGipa(i,name);
+    if(!fn) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    auto result=fn(i,count,groups);
+    if(enabled && groups && (result==VK_SUCCESS || result==VK_INCOMPLETE)) {
+        Lock lock(stateLock);
+        for(uint32_t j=0;j<*count;++j)
+            for(uint32_t k=0;k<groups[j].physicalDeviceCount && k<VK_MAX_DEVICE_GROUP_SIZE;++k)
+                physicals[groups[j].physicalDevices[k]]=i;
+        Log("[nr-inline] %s observed %u physical-device groups",name,*count);
+    }
+    return result;
+}
+extern "C" VkResult VKAPI_CALL NrGroups(VkInstance i,uint32_t* n,VkPhysicalDeviceGroupProperties* groups) {
+    return EnumerateGroups(i,n,groups,"vkEnumeratePhysicalDeviceGroups");
+}
+extern "C" VkResult VKAPI_CALL NrGroupsKHR(VkInstance i,uint32_t* n,VkPhysicalDeviceGroupProperties* groups) {
+    return EnumerateGroups(i,n,groups,"vkEnumeratePhysicalDeviceGroupsKHR");
+}
+extern "C" void VKAPI_CALL NrDestroyInstance(VkInstance i,const VkAllocationCallbacks* alloc) {
+    if(!resolve())return;
+    auto fn=(PFN_vkDestroyInstance)realGipa(i,"vkDestroyInstance");
+    if(enabled) {Lock lock(stateLock);for(auto it=physicals.begin();it!=physicals.end();)
+        if(it->second==i)it=physicals.erase(it);else ++it;}
+    fn(i,alloc);
+}
 extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceCreateInfo* info,const VkAllocationCallbacks* alloc,VkDevice* out) {
     BootstrapTrace trace("vkCreateDevice",bootstrap);
     resolve(); auto fn=(PFN_vkCreateDevice)GetProcAddress(nativeLoader,"vkCreateDevice");
     if(!enabled) {auto result=fn(p,info,alloc,out);trace.done(result);return result;}
     VkInstance instance{}; {Lock lock(stateLock); auto it=physicals.find(p); if(it!=physicals.end()) instance=it->second;}
+    Log("[nr-inline] create-device physical=%p tracked-instance=%p",p,instance);
+    for(unsigned j=0;j<info->queueCreateInfoCount;++j)
+        Log("[nr-inline] requested queue family=%u count=%u flags=%#x",info->pQueueCreateInfos[j].queueFamilyIndex,info->pQueueCreateInfos[j].queueCount,info->pQueueCreateInfos[j].flags);
     // NR needs buffer device addresses. Add the supported KHR feature only when
     // there is no existing BDA/Vulkan12 declaration to conflict with. Never edit
     // the game's pNext objects or silently override an explicit false field.
@@ -214,6 +246,8 @@ extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceC
         Log("[nr-inline] BDA-enabled creation failed (%d); retrying unchanged game configuration",result);
         selected=*info;result=fn(p,info,alloc,out);
     }
+    Log("[nr-inline] create-device result=%d device=%p",result,result==VK_SUCCESS?*out:nullptr);
+    if(enabled && result==VK_SUCCESS && !instance)Log("[nr-inline] device left untracked: physical device was not observed in enumeration");
     if(enabled && result==VK_SUCCESS && instance) {
         Device d; d.instance=instance; d.physical=p;
         for(unsigned i=0;i<info->queueCreateInfoCount;++i) if(info->pQueueCreateInfos[i].queueCount==1)
@@ -339,6 +373,8 @@ static PFN_vkVoidFunction Wrap(const char* n,PFN_vkVoidFunction original) {
         return original;
     }
     HOOK("vkEnumeratePhysicalDevices",NrEnumerate) HOOK("vkCreateDevice",NrCreateDevice)
+    HOOK("vkEnumeratePhysicalDeviceGroups",NrGroups) HOOK("vkEnumeratePhysicalDeviceGroupsKHR",NrGroupsKHR)
+    HOOK("vkDestroyInstance",NrDestroyInstance)
     HOOK("vkCreateCommandPool",NrCreatePool) HOOK("vkDestroyCommandPool",NrDestroyPool)
     HOOK("vkAllocateCommandBuffers",NrAllocate) HOOK("vkFreeCommandBuffers",NrFree)
     HOOK("vkBeginCommandBuffer",NrBegin) HOOK("vkDestroyDevice",NrDestroyDevice)

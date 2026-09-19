@@ -3,16 +3,27 @@
 The active experiment is **DLSS 5 NR → the game's existing DLSS SR**. FG work is
 deferred. Nothing creates generated frames or replaces the game's presentation.
 
-**Runtime status, 2026-09-19: corrected native-loader candidate validated in
-isolated fixtures; RDR2 restart pending.** The old direct-winevulkan shim hung
-before the menu and was removed. The user confirmed working startup after that
-rollback. Inspection established that working RDR2 uses a native Windows Vulkan
-loader from its prefix. The new shim preserves that loader using a private,
-hash-pinned sibling copy, `dlssnr_system_vulkan.dll`; the original prefix stays
-untouched. Eleven native-loader validation gates and six NGX observer cases
-passed. These do not establish compatibility or visual quality in actual RDR2.
-The two old installers remain blocked. Use only `tools/install-nr-native.py`
-for this candidate, which starts with NR disarmed and provides exact rollback.
+**Runtime status, 2026-09-19: native-loader startup reached a real RDR2 scene;
+NR bypassed safely.** The user reached a scene with the corrected native loader
+chain. Arming NR reported an unavailable device context and left original SR
+unchanged. A read-only snapshot showed all tracked command buffers belonged to
+a device missing from the device table; the separately observed device had BDA
+and one queue in family 0. NR was disarmed again and the user closed the game.
+No NR-before-SR gameplay or visual improvement has been demonstrated yet.
+
+The new candidate also tracks core/KHR physical-device-group enumeration and
+removes mappings on instance destruction. An isolated groups-only enumeration
+test reproduces the same bypass with the previous installed shim (zero Color
+replacements); the corrected shim processes three frames. This establishes a
+real coverage bug, while actual RDR2 use of that enumeration path still needs a
+new launch to confirm. Device creation now records bounded per-creation context
+and queue information, and bypass reasons distinguish missing device, BDA and
+queue topology. No handle aliases or relaxed queue checks are introduced.
+
+The shim preserves the game's native prefix loader using a private, hash-pinned
+sibling copy, `dlssnr_system_vulkan.dll`; the prefix stays untouched. The two old
+installers remain blocked. Use only `tools/install-nr-native.py` for this
+candidate, which starts with NR disarmed and provides exact rollback.
 
 The NGX observer dispatches known SuperSampling feature evaluations to an
 application-local Vulkan forwarding shim. The shim records HDR encoding, NR,
@@ -118,8 +129,9 @@ requires the pinned game executable, native loader, model, actual SR DLL and
 matching successful validation artifacts for the exact adapter and fixtures:
 `native-baseline`, `bootstrap-wsi`, `bootstrap-forward`, `bootstrap-track`,
 `bootstrap-bda`, `launcher`, `disabled`, `missing-dll`, `bda-auto`, `armed-cycle`,
-`real-sr`, plus all six NGX observer gates. All passed with the current native
-backend; the actual NR → SR fixture completed three frames without Vulkan
+`real-sr`, `groups-core`, `groups-khr`, plus all six NGX observer gates.
+All thirteen gates passed after the groups change with matching binary hashes;
+the actual NR → SR fixture completed three frames without Vulkan
 validation errors. The arming fixture verified missing and stale requests leave
 pixels unchanged without loading NR, valid activation changes pixels, and
 removing the request returns to unchanged forwarding.
@@ -127,6 +139,8 @@ removing the request returns to unchanged forwarding.
 ```sh
 python3 tools/run-nr-inline-probe.py --inline --validation --case native-baseline
 python3 tools/run-nr-inline-probe.py --inline --validation --case armed-cycle
+python3 tools/run-nr-inline-probe.py --inline --validation --case groups-core
+python3 tools/run-nr-inline-probe.py --inline --validation --case groups-khr
 python3 tools/install-nr-native.py --dry-run
 python3 tools/install-nr-native.py
 # After restart and an SR evaluation in a loaded scene:

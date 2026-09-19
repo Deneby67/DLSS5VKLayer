@@ -146,7 +146,7 @@ static bool HasDeviceExt(VkPhysicalDevice phys, const char* name) {
     return false;
 }
 
-static bool CreateContext(VkCtx& c, bool frameGeneration = false) {
+static bool CreateContext(VkCtx& c, bool frameGeneration = false, unsigned enumerateGroups = 0) {
     g_vkModule = LoadLibraryA("vulkan-1.dll");
     if (!g_vkModule) { Log("[helper] no vulkan-1.dll"); return false; }
     g_gipa = (PFN_vkGetInstanceProcAddr)GetProcAddress(g_vkModule, "vkGetInstanceProcAddr");
@@ -156,11 +156,11 @@ static bool CreateContext(VkCtx& c, bool frameGeneration = false) {
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "dlssnr_helper";
     app.apiVersion = VK_API_VERSION_1_3;
-    const char* instExts[] = { "VK_KHR_get_physical_device_properties2", "VK_EXT_debug_utils" };
+    const char* instExts[] = { "VK_KHR_get_physical_device_properties2", "VK_EXT_debug_utils", "VK_KHR_device_group_creation" };
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
-    ici.enabledExtensionCount = 2;
+    ici.enabledExtensionCount = enumerateGroups==2 ? 3 : 2;
     ici.ppEnabledExtensionNames = instExts;
     if (vkCreateInstance(&ici, nullptr, &c.instance) != VK_SUCCESS) {
         // debug_utils unavailable: retry without it
@@ -199,9 +199,21 @@ static bool CreateContext(VkCtx& c, bool frameGeneration = false) {
 #undef LOAD
 
     uint32_t devCount = 0;
-    vkEnumeratePhysicalDevices(c.instance, &devCount, nullptr);
-    std::vector<VkPhysicalDevice> phys(devCount);
-    vkEnumeratePhysicalDevices(c.instance, &devCount, phys.data());
+    std::vector<VkPhysicalDevice> phys;
+    if(enumerateGroups) {
+        auto enumerate=(PFN_vkEnumeratePhysicalDeviceGroups)g_gipa(c.instance,
+            enumerateGroups==2 ? "vkEnumeratePhysicalDeviceGroupsKHR" : "vkEnumeratePhysicalDeviceGroups");
+        if(!enumerate || enumerate(c.instance,&devCount,nullptr)!=VK_SUCCESS)return false;
+        std::vector<VkPhysicalDeviceGroupProperties> groups(devCount);
+        for(auto& group:groups)group.sType=VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GROUP_PROPERTIES;
+        if(enumerate(c.instance,&devCount,groups.data())!=VK_SUCCESS)return false;
+        for(unsigned j=0;j<devCount;++j)for(unsigned k=0;k<groups[j].physicalDeviceCount;++k)
+            phys.push_back(groups[j].physicalDevices[k]);
+    } else {
+        vkEnumeratePhysicalDevices(c.instance, &devCount, nullptr);
+        phys.resize(devCount);
+        vkEnumeratePhysicalDevices(c.instance, &devCount, phys.data());
+    }
     for (auto p : phys) {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(p, &props);

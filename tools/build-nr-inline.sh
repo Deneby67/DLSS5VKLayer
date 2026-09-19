@@ -37,6 +37,7 @@ import re,sys
 from pathlib import Path
 p=Path(sys.argv[1])
 hooks={'vkGetInstanceProcAddr':'NrGipa','vkGetDeviceProcAddr':'NrGdpa','vkEnumeratePhysicalDevices':'NrEnumerate',
+       'vkEnumeratePhysicalDeviceGroups':'NrGroups','vkDestroyInstance':'NrDestroyInstance',
        'vkCreateDevice':'NrCreateDevice','vkCreateCommandPool':'NrCreatePool','vkDestroyCommandPool':'NrDestroyPool',
        'vkAllocateCommandBuffers':'NrAllocate','vkFreeCommandBuffers':'NrFree','vkBeginCommandBuffer':'NrBegin',
        'vkDestroyDevice':'NrDestroyDevice','vkCreateInstance':'NrCreateInstance',

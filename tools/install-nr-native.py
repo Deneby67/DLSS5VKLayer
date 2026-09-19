@@ -36,7 +36,7 @@ for path in sorted((out/'runs').glob('*/result.json')):
     r=json.loads(path.read_text())
     if r.get('inline'):reports[r.get('case')]=(path,r)
 cases=('native-baseline','bootstrap-wsi','bootstrap-forward','bootstrap-track','bootstrap-bda',
-       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr')
+       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr','groups-core','groups-khr')
 for case in cases:
     require(case in reports,f'Missing native validation gate: {case}')
     path,r=reports[case]
