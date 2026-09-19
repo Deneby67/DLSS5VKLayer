@@ -1,0 +1,448 @@
+{
+  "schema": 1,
+  "kind": "ngx_sr_metadata_evidence",
+  "runnable": false,
+  "fg_ready": false,
+  "mode": "observe_only",
+  "intended_pipeline": [
+    "NR",
+    "SR",
+    "FG"
+  ],
+  "complete_windows": 1,
+  "successful_evaluations": 32,
+  "evaluation_results": {
+    "0x1": 32
+  },
+  "verified_feature_id": 1,
+  "resources": {
+    "Color": [
+      {
+        "aspect": 1,
+        "base_layer": 0,
+        "base_mip": 0,
+        "extent": [
+          2293,
+          960
+        ],
+        "format": 97,
+        "layers": 1,
+        "mips": 1,
+        "read_write": false,
+        "result": 1,
+        "status": "image_descriptor"
+      }
+    ],
+    "DLSS.Input.Bias.Current.Color.Mask": [
+      {
+        "aspect": 1,
+        "base_layer": 0,
+        "base_mip": 0,
+        "extent": [
+          2293,
+          960
+        ],
+        "format": 9,
+        "layers": 1,
+        "mips": 1,
+        "read_write": false,
+        "result": 1,
+        "status": "image_descriptor"
+      }
+    ],
+    "Depth": [
+      {
+        "aspect": 6,
+        "base_layer": 0,
+        "base_mip": 0,
+        "extent": [
+          2293,
+          960
+        ],
+        "format": 130,
+        "layers": 1,
+        "mips": 1,
+        "read_write": false,
+        "result": 1,
+        "status": "image_descriptor"
+      }
+    ],
+    "ExposureTexture": [
+      {
+        "aspect": 1,
+        "base_layer": 0,
+        "base_mip": 0,
+        "extent": [
+          1,
+          1
+        ],
+        "format": 100,
+        "layers": 1,
+        "mips": 1,
+        "read_write": false,
+        "result": 1,
+        "status": "image_descriptor"
+      }
+    ],
+    "MotionVectors": [
+      {
+        "aspect": 1,
+        "base_layer": 0,
+        "base_mip": 0,
+        "extent": [
+          2293,
+          960
+        ],
+        "format": 83,
+        "layers": 1,
+        "mips": 1,
+        "read_write": false,
+        "result": 1,
+        "status": "image_descriptor"
+      }
+    ],
+    "Output": [
+      {
+        "aspect": 1,
+        "base_layer": 0,
+        "base_mip": 0,
+        "extent": [
+          3440,
+          1440
+        ],
+        "format": 97,
+        "layers": 1,
+        "mips": 1,
+        "read_write": true,
+        "result": 1,
+        "status": "image_descriptor"
+      }
+    ]
+  },
+  "values": {
+    "DLSS.Exposure.Scale": [
+      {
+        "result": 3134193680
+      }
+    ],
+    "DLSS.Feature.Create.Flags": [
+      {
+        "result": 1,
+        "value": 43
+      }
+    ],
+    "DLSS.Input.Color.Subrect.Base.X": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Input.Color.Subrect.Base.Y": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Input.Depth.Subrect.Base.X": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Input.Depth.Subrect.Base.Y": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Input.MV.Subrect.Base.X": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Input.MV.Subrect.Base.Y": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Output.Subrect.Base.X": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Output.Subrect.Base.Y": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "DLSS.Pre.Exposure": [
+      {
+        "result": 1,
+        "value": 1.0
+      }
+    ],
+    "DLSS.Render.Subrect.Dimensions.Height": [
+      {
+        "result": 1,
+        "value": 960
+      }
+    ],
+    "DLSS.Render.Subrect.Dimensions.Width": [
+      {
+        "result": 1,
+        "value": 2293
+      }
+    ],
+    "FrameTimeDeltaInMsec": [
+      {
+        "result": 1,
+        "value": 0.0
+      }
+    ],
+    "Height": [
+      {
+        "result": 1,
+        "value": 960
+      }
+    ],
+    "Jitter.Offset.X": [
+      {
+        "result": 1,
+        "value": -0.0625
+      },
+      {
+        "result": 1,
+        "value": -0.125
+      },
+      {
+        "result": 1,
+        "value": -0.1875
+      },
+      {
+        "result": 1,
+        "value": -0.21875
+      },
+      {
+        "result": 1,
+        "value": -0.25
+      },
+      {
+        "result": 1,
+        "value": -0.3125
+      },
+      {
+        "result": 1,
+        "value": -0.375
+      },
+      {
+        "result": 1,
+        "value": -0.4375
+      },
+      {
+        "result": 1,
+        "value": -0.46875
+      },
+      {
+        "result": 1,
+        "value": 0.03125
+      },
+      {
+        "result": 1,
+        "value": 0.0625
+      },
+      {
+        "result": 1,
+        "value": 0.0
+      },
+      {
+        "result": 1,
+        "value": 0.125
+      },
+      {
+        "result": 1,
+        "value": 0.1875
+      },
+      {
+        "result": 1,
+        "value": 0.25
+      },
+      {
+        "result": 1,
+        "value": 0.3125
+      },
+      {
+        "result": 1,
+        "value": 0.375
+      },
+      {
+        "result": 1,
+        "value": 0.4375
+      }
+    ],
+    "Jitter.Offset.Y": [
+      {
+        "result": 1,
+        "value": -0.01851847767829895
+      },
+      {
+        "result": 1,
+        "value": -0.055555522441864014
+      },
+      {
+        "result": 1,
+        "value": -0.12962961196899414
+      },
+      {
+        "result": 1,
+        "value": -0.1666666567325592
+      },
+      {
+        "result": 1,
+        "value": -0.24074071645736694
+      },
+      {
+        "result": 1,
+        "value": -0.277777761220932
+      },
+      {
+        "result": 1,
+        "value": -0.35185182094573975
+      },
+      {
+        "result": 1,
+        "value": -0.3888888955116272
+      },
+      {
+        "result": 1,
+        "value": -0.4259259104728699
+      },
+      {
+        "result": 1,
+        "value": -0.46296295523643494
+      },
+      {
+        "result": 1,
+        "value": 0.05555558204650879
+      },
+      {
+        "result": 1,
+        "value": 0.09259259700775146
+      },
+      {
+        "result": 1,
+        "value": 0.1666666865348816
+      },
+      {
+        "result": 1,
+        "value": 0.20370370149612427
+      },
+      {
+        "result": 1,
+        "value": 0.2777777910232544
+      },
+      {
+        "result": 1,
+        "value": 0.31481480598449707
+      },
+      {
+        "result": 1,
+        "value": 0.388888955116272
+      },
+      {
+        "result": 1,
+        "value": 0.42592597007751465
+      }
+    ],
+    "MV.Offset.X": [
+      {
+        "result": 3134193680
+      }
+    ],
+    "MV.Offset.Y": [
+      {
+        "result": 3134193680
+      }
+    ],
+    "MV.Scale.X": [
+      {
+        "result": 1,
+        "value": 1.0
+      }
+    ],
+    "MV.Scale.Y": [
+      {
+        "result": 1,
+        "value": 1.0
+      }
+    ],
+    "OutHeight": [
+      {
+        "result": 1,
+        "value": 1440
+      }
+    ],
+    "OutWidth": [
+      {
+        "result": 1,
+        "value": 3440
+      }
+    ],
+    "PerfQualityValue": [
+      {
+        "result": 1,
+        "value": 2
+      }
+    ],
+    "Reset": [
+      {
+        "result": 1,
+        "value": 0
+      }
+    ],
+    "Width": [
+      {
+        "result": 1,
+        "value": 2293
+      }
+    ]
+  },
+  "optional_matrix_results": {
+    "ClipToPrevClipMatrix": [
+      3134193680
+    ],
+    "InvViewProjectionMatrix": [
+      3134193680
+    ]
+  },
+  "limitations": [
+    "Resource descriptors are observed; pixels and GPU completion are not verified.",
+    "NGX call identity does not establish the corresponding presented frame.",
+    "Windows NGX resource handles must not be treated as native Linux handles.",
+    "Missing matrices have no inferred substitutes; camera semantics remain unverified.",
+    "No processing stage, resource preservation or presentation pacing is enabled."
+  ],
+  "provenance": {
+    "game_executable_sha256": "b56c9548f670654a9b73bf25def3cd73af12e269f6e47dba28a34079adaf465e",
+    "observer_sha256": "b946a9e66edaff34c88b4cf8c901731a9bea01276741dae389cf1d75772ce9a7",
+    "nvidia_driver": "615.71.09",
+    "observed_date": "2026-09-19",
+    "game": "RDR2 Vulkan",
+    "scene": "User-confirmed loaded 3D scene with stock DLSS enabled"
+  },
+  "interpretation": {
+    "create_flags": 43,
+    "hdr_input": true,
+    "low_resolution_motion": true,
+    "inverted_depth": true,
+    "motion_contains_jitter_flag": false,
+    "sharpening_requested": true,
+    "raw_motion_units_verified": false,
+    "exposure_texture": "R32_SFLOAT 1x1; texel not read",
+    "frame_time_parameter": "Present but zero throughout this window; not a usable timing source",
+    "camera_matrices": "The two queried optional keys are absent; no camera defaults may be inferred"
+  }
+}

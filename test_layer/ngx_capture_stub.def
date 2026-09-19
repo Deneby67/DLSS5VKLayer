@@ -1,0 +1,10 @@
+LIBRARY nvngx
+EXPORTS
+    NVSDK_NGX_VULKAN_CreateFeature
+    NVSDK_NGX_VULKAN_CreateFeature1
+    NVSDK_NGX_VULKAN_EvaluateFeature
+    NVSDK_NGX_VULKAN_ReleaseFeature
+    TestParameters=_nvngx.TestParameters
+    TestCalls=_nvngx.TestCalls
+    TestCallbacks=_nvngx.TestCallbacks
+    TestOrdinal=_nvngx.TestOrdinal

@@ -1,0 +1,18 @@
+LIBRARY version
+EXPORTS
+    GetFileVersionInfoA=dlssfg_system_version.GetFileVersionInfoA
+    GetFileVersionInfoW=dlssfg_system_version.GetFileVersionInfoW
+    GetFileVersionInfoExA=dlssfg_system_version.GetFileVersionInfoExA
+    GetFileVersionInfoExW=dlssfg_system_version.GetFileVersionInfoExW
+    GetFileVersionInfoSizeA=dlssfg_system_version.GetFileVersionInfoSizeA
+    GetFileVersionInfoSizeW=dlssfg_system_version.GetFileVersionInfoSizeW
+    GetFileVersionInfoSizeExA=dlssfg_system_version.GetFileVersionInfoSizeExA
+    GetFileVersionInfoSizeExW=dlssfg_system_version.GetFileVersionInfoSizeExW
+    VerFindFileA=dlssfg_system_version.VerFindFileA
+    VerFindFileW=dlssfg_system_version.VerFindFileW
+    VerInstallFileA=dlssfg_system_version.VerInstallFileA
+    VerInstallFileW=dlssfg_system_version.VerInstallFileW
+    VerLanguageNameA=dlssfg_system_version.VerLanguageNameA
+    VerLanguageNameW=dlssfg_system_version.VerLanguageNameW
+    VerQueryValueA=dlssfg_system_version.VerQueryValueA
+    VerQueryValueW=dlssfg_system_version.VerQueryValueW

@@ -4,6 +4,7 @@
   "enabled": false,
   "executable": "RDR2.exe",
   "optical_flow_fallback": true,
-  "status": "ngx_capture_pending",
-  "notes": "Prefer interception of the existing Vulkan NGX DLSS evaluation to observe named color, output, depth, motion, jitter, scale and reset parameters. Two completed Vulkan diagnostic windows also identify matching RG16F motion-candidate and D32F+S8 depth targets. Camera semantics, GPU frame identity, resource preservation and FG presentation remain unverified; profile stays disabled."
+  "status": "ngx_sr_metadata_verified_camera_and_gpu_bridge_pending",
+  "notes": "Target pipeline: DLSS 5 NR -> game DLSS SR -> FG x2. A bounded real-scene window verified 32 successful stock SR calls with explicit color, depth, engine motion and exposure descriptors. Pre-SR color is HDR despite SDR display output. The two queried camera matrices are absent. GPU contents, frame identity, camera semantics, cross-runtime resource preservation and FG presentation remain unverified; profile stays disabled. Optical flow uses original pre-NR color as fallback.",
+  "research_evidence": "../research/rdr2-ngx-sr-evidence.json"
 }

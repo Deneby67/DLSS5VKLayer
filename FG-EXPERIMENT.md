@@ -4,6 +4,12 @@ This branch is an **experimental backend and profile foundation**, not working
 in-game frame generation. NR and the Rockstar Social Club renderer exclusion
 remain available. No NVIDIA binaries are included in the repository.
 
+The intended game pipeline is now **DLSS 5 NR → the game's DLSS SR → FG ×2**.
+Original input color remains the source for optical-flow fallback. The new
+[RDR2 NGX observer](ngx_capture/README.md) is implemented and tested independently;
+it does not yet execute this processing chain. The previous continuously tracked
+draw-discovery path is disabled for normal gameplay after a reported FPS regression.
+
 ## Verified gate
 
 On RTX 5090, driver 615.71.09, custom Stable Proton
@@ -511,16 +517,29 @@ The preferred next interception point is the game's **existing Vulkan NGX DLSS
 EvaluateFeature call**, rather than extending heuristic attachment capture first.
 The running process loads the driver's `nvngx.dll` and `_nvngx.dll`, plus the
 application's `nvngx_dlss.dll`. The loader exports the Vulkan evaluate entry point.
-Loading alone does not prove which entry point is called; tracing is still needed.
+Loading alone does not prove which entry point is called. The NGX observer has
+now confirmed 32 successful SuperSampling evaluations in a loaded RDR2 scene,
+paired with the intercepted feature creation. Address-free evidence is recorded
+in `profiles/research/rdr2-ngx-sr-evidence.json`.
 The [official Vulkan DLSS helper](https://github.com/NVIDIA/DLSS/blob/main/include/nvsdk_ngx_helpers_vk.h)
 passes named color/output/depth/motion resources, jitter, motion scale and reset
 through the parameter object. Observe inputs before forwarding the real call;
 output availability is GPU-ordered after the recorded DLSS work, not simply after
 the CPU function returns. Keep native resource ownership and Wine handle wrapping
-explicit. No proxy has been installed in RDR2 yet.
+explicit. An application-local diagnostic proxy is now implemented; see
+`ngx_capture/README.md` for tests, scope, installation and remaining limitations.
 
 This route requires the game's DLSS path to execute. It does not supply every FG
 camera constant automatically, nor solve HUD composition, tone mapping or paced
 presentation. Existing shader/camera evidence remains useful for missing data
 and corroboration. Optical flow remains the intended fallback for unavailable
 engine motion, not a replacement for valid depth/camera/frame identity.
+
+The observed NGX inputs are RGBA16F color, D32F+S8 depth and RG16F motion at
+2293x960, with RGBA16F SR output at 3440x1440. There is an R32F 1x1 exposure
+texture and an R8 bias-current-color mask. Create flags declare HDR input,
+low-resolution motion and inverted depth. NR before SR must preserve that HDR
+and exposure contract even with an SDR display. Both queried optional camera
+matrices are absent; frame-time is reported as zero. Actual pixels, camera
+semantics, GPU resource transfer and paced FG presentation remain unverified.
+The runtime profile remains disabled. The expensive draw discovery stays off.

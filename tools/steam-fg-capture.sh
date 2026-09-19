@@ -8,6 +8,16 @@ if (( $# == 0 )); then
   echo 'Use this script before %command% in the RDR2 Steam launch options.' >&2
   exit 2
 fi
+# NGX observations are scoped to RDR2 again inside the PE proxy. Keep the old
+# always-on draw tracker out of this path; it caused a major gameplay slowdown.
+if [[ "${DLSSFG_NGX_CAPTURE:-auto}" == 1 ]] ||
+   [[ "${DLSSFG_NGX_CAPTURE:-auto}" == auto && -f "$HOME/.config/dlssnr/fg-ngx.enabled" ]]; then
+  export DLSSFG_NGX_CAPTURE_DIR="Z:$HOME/.local/state/dlssnr/ngx"
+  export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}version=n,b"
+  export DLSSFG_DISCOVERY=0
+else
+  unset DLSSFG_NGX_CAPTURE_DIR
+fi
 # Discovery is per-user opt-in, and the C++ layer independently matches RDR2.exe.
 # The marker is installed with a backup/restore script by install-discovery.py.
 if [[ "${DLSSFG_DISCOVERY:-auto}" == 1 ]] ||
