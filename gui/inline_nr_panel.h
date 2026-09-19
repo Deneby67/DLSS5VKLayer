@@ -7,14 +7,17 @@ class QLabel;
 class QPushButton;
 class QProcess;
 class QTimer;
+struct ShmHeader;
 
 class InlineNrPanel : public QWidget {
 public:
-    explicit InlineNrPanel(const QString& controller, QWidget* parent=nullptr, bool poll=true);
+    explicit InlineNrPanel(const QString& controller, QWidget* parent=nullptr, bool poll=true, ShmHeader* settings=nullptr);
+    void setRenderingEnabled(bool on);
     void applyStatus(const QJsonObject& status);
 private:
     void request(const QString& mode);
-    QString controllerPath, logPath, token;
+    ShmHeader* settings;
+    QString controllerPath, logPath, token, pendingMode, pendingToken, pendingLog;
     QCheckBox* enabled;
     QLabel* state;
     QLabel* reason;

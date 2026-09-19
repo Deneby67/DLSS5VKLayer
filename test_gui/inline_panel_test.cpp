@@ -1,4 +1,5 @@
 #include "inline_nr_panel.h"
+#include "../common/shm_protocol.h"
 #include <QApplication>
 #include <QCheckBox>
 #include <QLabel>
@@ -30,12 +31,13 @@ int main(int argc,char** argv) {
     const QString script=tmp.path()+"/control.py";
     QFile file(script);check(file.open(QIODevice::WriteOnly));
     file.write("import json,sys\nfrom pathlib import Path\nPath(__file__).with_suffix('.args').write_text(json.dumps(sys.argv[1:]))\nprint(json.dumps(dict(status='pending',ready=True,can_enable=True,requested_on=sys.argv[2]=='on',token='77',log='/test/adapter.log')))\n");file.close();
-    InlineNrPanel transport(script,nullptr,false);
+    ShmHeader settings{};ShmInitDefaults(&settings);settings.enabled=0;
+    InlineNrPanel transport(script,nullptr,false,&settings);
     transport.applyStatus({{"status","off"},{"ready",true},{"can_enable",true},{"requested_on",false},{"token","77"},{"log","/test/adapter.log"}});
     auto* button=transport.findChild<QCheckBox*>("inlineNrEnabled");button->click();
     QElapsedTimer deadline;deadline.start();
     while(!button->isEnabled() && deadline.elapsed()<5000){app.processEvents();QThread::msleep(5);}
-    check(button->isEnabled() && button->isChecked());
+    check(button->isEnabled() && button->isChecked() && settings.enabled==1);
     QFile arguments(tmp.path()+"/control.args");check(arguments.open(QIODevice::ReadOnly));
     check(arguments.readAll()=="[\"/test/adapter.log\", \"on\", \"--token\", \"77\"]");
     std::printf("inline panel: %s\n",failures?"FAIL":"PASS");return failures?1:0;

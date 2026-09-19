@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <cstdio>
+#include <string>
 #include "../core/logging.h"
 
 // Poll only under renderLock. An installer-selected control file keeps NR off
@@ -14,6 +15,18 @@ struct InlineArm {
         auto n=GetEnvironmentVariableW(L"DLSSNR_ARM_FILE",file,32768);
         configured=n!=0;
         if(n>=32768)file[0]=0; // Invalid selection stays off.
+    }
+    bool set(bool on) {
+        if(!configured || !file[0])return false;
+        std::wstring temporary=std::wstring(file)+L".key.tmp";
+        HANDLE out=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(out==INVALID_HANDLE_VALUE)return false;
+        char data[128];int size=snprintf(data,sizeof(data),"%lu %llu %u\n",GetCurrentProcessId(),token,unsigned(on));
+        DWORD written=0;bool ok=WriteFile(out,data,size,&written,nullptr) && written==DWORD(size);
+        CloseHandle(out);
+        ok=ok && MoveFileExW(temporary.c_str(),file,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+        if(!ok){DeleteFileW(temporary.c_str());return false;}
+        nextPoll=0;return true;
     }
     bool allow() {
         if(!configured)return true; // Ungated isolated fixtures only; installer always sets a path.

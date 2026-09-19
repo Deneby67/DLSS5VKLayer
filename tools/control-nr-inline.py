@@ -141,6 +141,7 @@ def status(home, selected='auto', proc_root=Path('/proc')):
     # explain the current activation, not a successful later interval.
     terminal=re.findall(r'\[nr-inline\] (disabled[^\r\n]*|initialization failed[^\r\n]*)',text)
     current=text[text.rfind('[nr-inline] arm-state enabled'):] if observed=='enabled' else ''
+    rendering=re.findall(r'\[nr-inline\] Rendering state (enabled|disabled|unavailable)',text)
     bypasses=re.findall(r'\[nr-inline\] bypass: ([^\r\n]+)',current)
     result['can_enable']=not bool(terminal)
     if terminal:
@@ -149,6 +150,8 @@ def status(home, selected='auto', proc_root=Path('/proc')):
         result.update(status='pending',reason='Waiting for the next DLSS evaluation to apply the request.')
     elif observed=='disabled':
         result.update(status='off',reason='Ready. NR is off for this session.')
+    elif rendering and rendering[-1]!='enabled':
+        result.update(status='bypassed',reason='Rendering settings are '+rendering[-1]+'. Enable Neural rendering or press F2 in the game.')
     elif bypasses:
         result.update(status='bypassed',reason=bypasses[-1])
     elif result['nr_recorded']:

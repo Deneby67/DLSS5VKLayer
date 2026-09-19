@@ -1,4 +1,5 @@
 #include "inline_nr_panel.h"
+#include "../common/shm_protocol.h"
 #include <QCheckBox>
 #include <QDesktopServices>
 #include <QJsonDocument>
@@ -10,8 +11,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
-InlineNrPanel::InlineNrPanel(const QString& controller,QWidget* parent,bool poll)
-    : QWidget(parent),controllerPath(controller) {
+InlineNrPanel::InlineNrPanel(const QString& controller,QWidget* parent,bool poll,ShmHeader* shared)
+    : QWidget(parent),settings(shared),controllerPath(controller) {
     setObjectName("inlineNrPanel");
     auto* layout=new QVBoxLayout(this);
     auto* title=new QLabel("DLSS 5 NR → DLSS · RDR2 Vulkan",this);
@@ -29,7 +30,7 @@ InlineNrPanel::InlineNrPanel(const QString& controller,QWidget* parent,bool poll
     reason->setTextFormat(Qt::PlainText);reason->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(state);layout->addWidget(reason);
     openLog=new QPushButton("Open game NR log",this);openLog->setEnabled(false);layout->addWidget(openLog,0,Qt::AlignLeft);
-    auto* note=new QLabel("Load a scene with native DLSS, then enable NR here.\n\nThis mode runs inside the game. Runner, Start helper and the other tabs configure the separate external helper.\n\nClosing this window leaves the current session unchanged. A new game starts with NR off.",this);
+    auto* note=new QLabel("Load a scene with native DLSS. F2 toggles NR while the game is focused, even with this window closed.\n\nRendering → Neural rendering supplies the model settings. Creation settings apply after 0.75 seconds without edits; sharpness applies immediately. Up to eight distinct model configurations are retained per game session; restart to release them.\n\nCost and the other tabs configure the external helper. This integration uses one pass at native DLSS input resolution. Start helper is not needed.\n\nA new game starts with NR off.",this);
     note->setWordWrap(true);layout->addWidget(note);layout->addStretch();
     process=new QProcess(this);
     timeout=new QTimer(this);timeout->setSingleShot(true);timeout->setInterval(5000);
@@ -44,13 +45,19 @@ InlineNrPanel::InlineNrPanel(const QString& controller,QWidget* parent,bool poll
             if(code!=0)status["status"]="error";
             applyStatus(status);
         }
+        if(!pendingMode.isEmpty()) {
+            const auto mode=pendingMode;
+            const bool sameSession=token==pendingToken && logPath==pendingLog;
+            pendingMode.clear();
+            if(sameSession)QTimer::singleShot(0,this,[this,mode]{request(mode);});
+        }
     });
     connect(process,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
         if(error==QProcess::FailedToStart) {
             timeout->stop();applyStatus({{"status","error"},{"reason","Game controller is unavailable. Reinstall the GUI integration."}});
         }
     });
-    connect(enabled,&QCheckBox::clicked,this,[this](bool on){request(on?"on":"off");});
+    connect(enabled,&QCheckBox::clicked,this,[this](bool on){setRenderingEnabled(on);});
     connect(openLog,&QPushButton::clicked,this,[this]{if(!logPath.isEmpty())QDesktopServices::openUrl(QUrl::fromLocalFile(logPath));});
     if(poll) {
         auto* timer=new QTimer(this);timer->setInterval(1500);
@@ -59,8 +66,17 @@ InlineNrPanel::InlineNrPanel(const QString& controller,QWidget* parent,bool poll
     }
 }
 
+void InlineNrPanel::setRenderingEnabled(bool on) {
+    if(!ready || (on && !canEnable))return;
+    if(settings) {settings->enabled.store(on?1:0);settings->controlSeq.fetch_add(1);}
+    request(on?"on":"off");
+}
+
 void InlineNrPanel::request(const QString& mode) {
-    if(process->state()!=QProcess::NotRunning)return;
+    if(process->state()!=QProcess::NotRunning) {
+        if(mode!="status"){pendingMode=mode;pendingToken=token;pendingLog=logPath;}
+        return;
+    }
     if(controllerPath.isEmpty()) {
         applyStatus({{"status","not_installed"},{"reason","Install the NR-before-DLSS GUI controller."}});return;
     }
@@ -83,6 +99,7 @@ void InlineNrPanel::applyStatus(const QJsonObject& s) {
     else if(status=="pending")label=requested?"Enabling NR…":"Disabling NR…";
     else if(status=="starting")label="NR requested · waiting for processing";
     else if(status=="recording")label="NR → DLSS commands recorded";
+    else if(status=="blocked")label="NR stopped · original DLSS continues";
     else if(status=="bypassed")label="NR bypassed · original DLSS continues";
     else if(status=="restart")label="Game restart required";
     else if(status=="waiting" || status=="waiting_sr")label="Waiting for RDR2 / native DLSS";

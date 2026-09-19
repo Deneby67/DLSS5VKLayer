@@ -36,7 +36,7 @@ for path in sorted((out/'runs').glob('*/result.json')):
     r=json.loads(path.read_text())
     if r.get('inline'):reports[r.get('case')]=(path,r)
 cases=('native-baseline','bootstrap-wsi','bootstrap-forward','bootstrap-track','bootstrap-bda',
-       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr')
+       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr','descriptor-stress','rendering-settings')
 for case in cases:
     require(case in reports,f'Missing native validation gate: {case}')
     path,r=reports[case]
@@ -56,7 +56,13 @@ for row in rows:require(sha(ngx_report.parent/row['case']/'version.dll')==sha(pr
 require(sha(ngx_report.parent/'real/dlssfg_system_version.dll')==sha(game/'dlssfg_system_version.dll'),'Different forwarded version DLL')
 backup=home/'.local/share/dlssnr/backups'/('native-inline-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 logs=home/'.local/state/dlssnr/native-inline'
-plan=dict(mode='native_loader_inline_nr_initially_disarmed',native_loader_sha256=NATIVE,
+settings_path=Path(f'/tmp/dlssnr-{os.getuid()}/shm.bin')
+config=home/'.config/dlssnr/config.ini'
+if config.exists():
+    for line in config.read_text().splitlines():
+        if line.startswith('shm=') and line[4:].strip():settings_path=Path(line[4:].strip())
+require(settings_path.is_absolute(),'GUI shared-memory path must be absolute')
+plan=dict(settings_path=str(settings_path),mode='native_loader_inline_nr_initially_disarmed',native_loader_sha256=NATIVE,
     log_root=str(logs),rollback=str(backup/'restore.py'),tests={c:str(reports[c][0]) for c in cases},ngx_test=str(ngx_report))
 if a.dry_run:print(json.dumps(plan,indent=2));raise SystemExit(0)
 backup.mkdir(parents=True,mode=0o700);logs.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -68,6 +74,7 @@ script='\n'.join(['#!/usr/bin/env bash','set -euo pipefail',
     'native_log_root='+shlex.quote(str(logs)),
     'native_run=$(mktemp -d "$native_log_root/run-XXXXXXXX")',
     'export DLSSNR_ARM_FILE="Z:$native_run/arm.txt" DLSSNR_LOG="Z:$native_run/adapter.log"',
+    'export DLSSNR_INLINE_SHM='+shlex.quote('Z:'+str(settings_path)),
     'export DLSSNR_BIN_DIR='+shlex.quote('Z:'+str(home/'.local/share/dlssnr/binaries')),
     'export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}vulkan-1=n;dlssnr_system_vulkan=n;version=n,b"',
     'exec '+shlex.quote(str(backup/'run-base'))+' "$@"',''])

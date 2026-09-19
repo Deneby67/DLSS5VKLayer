@@ -1317,14 +1317,16 @@ QWidget* MainWindow::buildSettings() {
                                     projectDir+"/tools/control-nr-inline.py"})
             if(QFile::exists(path)){controller=path;break;}
     }
-    col->addWidget(new InlineNrPanel(controller,tabs));
+    auto* inlinePanel=new InlineNrPanel(controller,tabs,true,hdr);
+    col->addWidget(inlinePanel);
     scrollTab("Rendering", &col);
     {
         // Enabling the pass and telling the model what to do are one decision, so they share a
         // group. Style leads Preset because the profile matters more than the number.
         auto* f = group(col, "Neural rendering");
-        binder->AddBool(f, "Enabled", &ShmHeader::enabled,
-                        "Run the model at all. Off leaves the game's own frame untouched.");
+        auto* renderingEnabled=binder->AddBool(f, "Enabled", &ShmHeader::enabled,
+                        "Run the model at all. Off leaves the game's own frame untouched. F2 toggles the in-game integration.");
+        connect(renderingEnabled,&QCheckBox::clicked,inlinePanel,&InlineNrPanel::setRenderingEnabled);
         binder->AddChoice(f, "Style", &ShmHeader::style, { "Default", "Natural", "Cinematic" },
                           "The model's own processing profiles.", ShmBinder::AtCreate);
         binder->AddInt(f, "Preset", &ShmHeader::preset, 0, 15, "The model's own render preset.",
@@ -1345,7 +1347,7 @@ QWidget* MainWindow::buildSettings() {
                          "The one strength the model reads every frame, so it takes effect at once.");
     }
     {
-        auto* f = group(col, "Cost");
+        auto* f = group(col, "Cost (external helper only)");
 binder->AddInt(f, "Passes", &ShmHeader::passes, 1, int(kMaxPasses),
                        "How many times the model runs over one frame, each pass shown the last one's "
                        "answer.\n"

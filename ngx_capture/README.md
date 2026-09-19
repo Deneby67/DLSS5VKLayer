@@ -149,3 +149,36 @@ None of this proves GPU contents, completion or a working FG presentation path.
 The user confirmed ordinary gameplay FPS with the corrected hooks attached;
 the older draw tracker remains disabled. This is a subjective gameplay check,
 not a controlled benchmark of observer overhead.
+
+### In-game NR controls (Rendering and F2)
+
+The native-loader adapter reads **Rendering → Neural rendering** directly from
+its GUI mapping (`DLSSNR_INLINE_SHM`, set by the installer). Enabled, style,
+preset, intensity, local structure/tone, skin structure, auto skin mask and
+sharpness apply to NR before SR. The mapping is opened existing, header-only;
+no pixel transport or external helper is started. Cost, per-pass settings,
+model resolution, Quality and Composition still belong to the external helper.
+The inline path runs one pass at the game's native DLSS input resolution.
+
+F2 toggles the current session when the game owns the foreground window; holding
+F2 does not repeat. The game resolves already-loaded user32 exports during SR
+evaluation, without adding loader-time dependencies. It atomically updates the
+PID/token arm request and the GUI Enabled field. The Rendering checkbox and the
+Before DLSS checkbox can also arm a connected session. Every new game remains
+disarmed until an explicit request; opening the GUI does not enable processing.
+
+Creation settings debounce for 750 ms; sharpness applies at evaluation. Old
+feature histories remain alive for recorded/in-flight GPU commands, with up to
+eight distinct configurations per session. Returning to a cached configuration
+reuses it with a history reset. A ninth configuration or any allocation/evaluate
+failure disables NR with an explicit log/GUI reason until restart. No per-frame
+queue/device wait was added. Model creation can briefly stall the recording
+thread, and retained histories consume extra VRAM.
+
+The old bridge could silently stop at 64 unique command buffers (observed live:
+66 accepted frames). The descriptor budget now covers 4096 buffers, including
+RDR2's observed pool of 2052; exhaustion is reported. The `descriptor-stress`
+gate checks actual modified readback for 130 distinct buffers. The
+`rendering-settings` gate checks create-time changes, reuse, Enabled bypass and
+invalid-settings bypass with Vulkan Validation Layers. These synthetic gates
+are not a sustained RDR2 benchmark or a validation of physical F2 input.

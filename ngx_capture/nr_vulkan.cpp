@@ -9,6 +9,7 @@
 #include <set>
 #include "bootstrap_trace.h"
 #include "nr_arm.h"
+#include "nr_settings.h"
 #include <vulkan/vulkan_win32.h>
 namespace {
 using namespace dlssnr;
@@ -22,6 +23,14 @@ PFN_vkGetInstanceProcAddr realGipa{};
 PFN_vkGetDeviceProcAddr realGdpa{};
 INIT_ONCE once=INIT_ONCE_STATIC_INIT;
 InlineArm arm;
+InlineSettings settings;
+InlineKeyEdge f2;
+std::vector<NgxTuning> tuningCache;
+NgxTuning pendingTuning;
+ULONGLONG tuningChanged=0;
+unsigned activeTuning=0;
+bool resetHistory=true;
+int renderingState=-1;
 thread_local bool inNrAllocationScope=false;
 struct NrAllocationScope {
     bool previous=inNrAllocationScope;
@@ -128,31 +137,54 @@ bool Process(VkCommandBuffer cmd,const void* handle,const void* params,NVSDK_NGX
     }
     if(!attempted) {
         attempted=true; srHandle=handle; nrDevice=command.device; nrFamily=command.family;
-        if(!Bind(device.instance,command.device)) { disabled=true; return false; }
+        if(!Bind(device.instance,command.device)) { disabled=true; Log("[nr-inline] disabled: Vulkan dispatch unavailable"); return false; }
         VkCtx context{}; context.instance=device.instance; context.physical=device.physical;
         context.device=command.device; context.queueFamily=command.family;
         InstallGuard(); g_layerModule=selfModule;
-        if(!bridge.initialize(context,w,h) || !NgxLoadAndInit(nr,context.instance,context.physical,context.device,w,h,cmd,{})) {
+        if(!bridge.initialize(context,w,h) || !NgxLoadAndInit(nr,context.instance,context.physical,context.device,w,h,cmd,settings.tuning)) {
             disabled=true; Log("[nr-inline] initialization failed; original SR retained"); return false;
         }
+        tuningCache.push_back(settings.tuning);pendingTuning=settings.tuning;
         Log("[nr-inline] ready %ux%u: HDR proxy -> NR -> HDR residual -> SR; native motion, no synthetic depth",w,h);
     }
-    if(!bridge.prepare(cmd,(VkImageView)ci.view,(VkImageView)ei.view)) {disabled=true;return false;}
+    if(settings.tuning!=pendingTuning) {pendingTuning=settings.tuning;tuningChanged=GetTickCount64();}
+    if(settings.tuning!=tuningCache[activeTuning] && GetTickCount64()-tuningChanged>=750) {
+        unsigned selected=0;
+        while(selected<tuningCache.size() && tuningCache[selected]!=settings.tuning)++selected;
+        if(selected==tuningCache.size()) {
+            // Retain old features until device idle/destruction: already recorded game
+            // command buffers can still reference their histories. Bound VRAM growth.
+            if(selected>=8) {disabled=true;Log("[nr-inline] disabled: eight Rendering configurations cached; restart game to release histories");return false;}
+            NgxSetCreateTuning(nr,settings.tuning);
+            if(!NgxCreatePass(nr,selected,w,h,cmd)) {disabled=true;Log("[nr-inline] disabled: Rendering configuration creation failed");return false;}
+            tuningCache.push_back(settings.tuning);
+        }
+        NgxSetCreateTuning(nr,settings.tuning);
+        activeTuning=selected;resetHistory=true;
+        Log("[nr-inline] Rendering configuration applied slot=%u intensity=%.2f tone=%.2f structure=%.2f skin=%.2f style=%u preset=%u automask=%u",
+            selected,settings.tuning.intensity,settings.tuning.localTone,settings.tuning.localStructure,
+            settings.tuning.skinStructure,settings.tuning.style,settings.tuning.preset,settings.tuning.autoMask);
+    }
+    if(!bridge.prepare(cmd,(VkImageView)ci.view,(VkImageView)ei.view)) {
+        disabled=true;Log("[nr-inline] disabled: color descriptor allocation failed (%zu command buffers)",bridge.sets.size());return false;
+    }
+    NgxSetSharpness(nr,settings.sharpness);
     bridge.dispatch(cmd,0,pre);
     TransitionImage(bridge.c,cmd,bridge.model,VK_IMAGE_LAYOUT_GENERAL,VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT,
         VK_ACCESS_SHADER_WRITE_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     NVSDK_NGX_Resource_VK mv{}; static_assert(sizeof(mv)==sizeof(motion)); memcpy(&mv,&motion,sizeof(mv));
     NgxSetResources(nr,ToResource(bridge.encoded,false),ToResource(bridge.model,true),mv,{},w,h);
-    NgxSetReset(nr,reset!=0 || accepted==0);
+    NgxSetReset(nr,reset!=0 || resetHistory || accepted==0);
     // This NR adapter uses its own verified 16-slot parameter implementation.
     nr.params->Set("DLSSNR.Jitter.Offset.X",jx); nr.params->Set("DLSSNR.Jitter.Offset.Y",jy);
     nr.params->Set("JitterOffsetX",jx); nr.params->Set("JitterOffsetY",jy);
-    if(!NgxEvaluatePass(nr,0,cmd)) {disabled=true;return false;}
+    if(!NgxEvaluatePass(nr,activeTuning,cmd)) {disabled=true;Log("[nr-inline] disabled: NGX evaluation failed");return false;}
+    resetHistory=false;
     TransitionImage(bridge.c,cmd,bridge.model,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_ACCESS_SHADER_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     bridge.dispatch(cmd,1,pre);
     output=ToResource(bridge.restored,false); ++accepted;
-    if(accepted==1 || accepted==120) Log("[nr-inline] recorded NR-before-SR calls=%u",accepted);
+    if(accepted==1 || accepted%600==0) Log("[nr-inline] recorded NR-before-SR calls=%u",accepted);
     return true;
 }
 }
@@ -163,7 +195,27 @@ extern "C" __declspec(dllexport) uint32_t DlssNrEvaluate(void* cmd,const void* h
     if(bootstrap || !enabled || !TryAcquireSRWLockExclusive(&renderLock)) return real(cmd,handle,params,callback);
     NVSDK_NGX_Resource_VK replacement{};
     const DWORD last=GetLastError(); bool processed=false;
-    try { if(arm.allow()) {NrAllocationScope scope; processed=Process((VkCommandBuffer)cmd,handle,params,replacement);} }
+    try {
+        const bool validSettings=settings.read();
+        bool requested=arm.allow();
+        if(InlineF2(f2) && arm.configured) {
+            const bool on=!(requested && settings.enabled);
+            if(arm.set(on)) {
+                settings.setEnabled(on);requested=arm.allow();
+                Log("[nr-inline] F2 %s",on?"enabled":"disabled");
+            } else Log("[nr-inline] F2 control write failed error=%lu",GetLastError());
+        }
+        const int gate=validSettings?(settings.enabled?1:0):2;
+        if(gate!=renderingState) {
+            renderingState=gate;
+            Log("[nr-inline] Rendering state %s",gate==1?"enabled":gate==0?"disabled":"unavailable");
+        }
+        if(requested && validSettings && settings.enabled) {
+            NrAllocationScope scope;processed=Process((VkCommandBuffer)cmd,handle,params,replacement);
+        } else {
+            resetHistory=true;
+        }
+    }
     catch(...) { disabled=true; Log("[nr-inline] disabled after internal exception"); }
     ngx_capture::ColorOverlay overlay(params,&replacement);
     SetLastError(last);

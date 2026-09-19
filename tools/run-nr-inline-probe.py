@@ -17,7 +17,7 @@ p.add_argument('--proton',type=Path,default=Path('/opt/Proton-11.0-2c-Zen5-BP18-
 p.add_argument('--validation',action='store_true')
 p.add_argument('--bridge',action='store_true')
 p.add_argument('--inline',action='store_true',help='Exercise the application-local Vulkan shim and Color overlay')
-p.add_argument('--case',choices=['active','launcher','disabled','missing-dll','bda-auto','real-sr','bootstrap-forward','bootstrap-track','bootstrap-bda','bootstrap-wsi','native-baseline','armed-cycle','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr'],default='active')
+p.add_argument('--case',choices=['active','launcher','disabled','missing-dll','bda-auto','real-sr','bootstrap-forward','bootstrap-track','bootstrap-bda','bootstrap-wsi','native-baseline','armed-cycle','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr','descriptor-stress','rendering-settings'],default='active')
 a=p.parse_args()
 repo=Path(__file__).resolve().parents[1]
 out=repo/'build/nr-inline'
@@ -39,6 +39,7 @@ if a.validation:
 env.pop('DLSSNR_PROBE_GROUPS',None)
 env.pop('DLSSNR_PROBE_EXT_BDA',None)
 env.pop('DLSSNR_ARM_FILE',None)
+for name in ('DLSSNR_INLINE_SHM','DLSSNR_PROBE_STRESS','DLSSNR_PROBE_SETTINGS'):env.pop(name,None)
 env.pop('DLSSNR_PROBE_ARM_CYCLE',None)
 env.pop('DLSSNR_BOOTSTRAP',None)
 env.pop('DLSSNR_BOOTSTRAP_DIR',None)
@@ -54,6 +55,8 @@ if a.inline:
     shutil.copy2(out/'dlssnr_system_vulkan.dll',run/'dlssnr_system_vulkan.dll')
     env.update(DLSSNR_INLINE='1',WINEDLLOVERRIDES='vulkan-1=n;dlssnr_system_vulkan=n')
     if a.case=='armed-cycle':env.update(DLSSNR_ARM_FILE='Z:'+str(ascii_run/'arm.txt'),DLSSNR_PROBE_ARM_CYCLE='1')
+    if a.case=='descriptor-stress':env['DLSSNR_PROBE_STRESS']='1'
+    if a.case=='rendering-settings':env.update(DLSSNR_INLINE_SHM='Z:'+str(ascii_run/'settings.bin'),DLSSNR_PROBE_SETTINGS='1')
     if a.case=='disabled':env['DLSSNR_INLINE']='0'
     if a.case=='missing-dll':env['DLSSNR_BIN_DIR']='Z:'+str(ascii_run/'missing')
     if a.case.startswith('bootstrap-'):
@@ -69,7 +72,7 @@ if a.inline:
     cmd[-1]=str(exe)
 with (run/'runner.log').open('w') as output:
     proc=subprocess.Popen(cmd,cwd=run,env=env,stdout=output,stderr=output,start_new_session=True)
-    try: code=proc.wait(timeout=60)
+    try: code=proc.wait(timeout=180 if a.case=='descriptor-stress' else 60)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid,signal.SIGTERM)
         try: proc.wait(timeout=5)
@@ -79,6 +82,14 @@ if (ascii_run/'nr.log').exists(): shutil.copy2(ascii_run/'nr.log',run/'nr.log')
 for trace in ascii_run.glob('bootstrap-*.log'): shutil.copy2(trace,run/trace.name)
 with (a.binaries/'nvngx_dlssnr.dll').open('rb') as stream:
     sha=hashlib.file_digest(stream,'sha256').hexdigest()
+if a.case=='rendering-settings' and code==0:
+    log=(run/'nr.log').read_text()
+    required=('intensity=0.65 tone=0.90 structure=0.80 skin=0.25 automask=0',
+              'Rendering configuration applied slot=1 intensity=1.50',
+              'Rendering configuration applied slot=0 intensity=0.65',
+              'Rendering state disabled','Rendering state unavailable',
+              'PASS calls=8 callbacks=8 replacements=6')
+    if not all(marker in log for marker in required):code=13
 record=dict(exit_code=code,passed=code==0,validation=a.validation,bridge=a.bridge,inline=a.inline,case=a.case,dll_sha256=sha)
 if a.inline:
     record['loader_kind']='rdr2_native_windows_loader'

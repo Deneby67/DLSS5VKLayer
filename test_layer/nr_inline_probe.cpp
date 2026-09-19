@@ -5,6 +5,8 @@
 #include "../core/ngx_caller.h"
 #include <cmath>
 #include <vector>
+#include "../ngx_capture/nr_settings.h"
+#include "../ngx_capture/nr_arm.h"
 using namespace dlssnr;
 constexpr unsigned W=1280,H=720;
 static VkCtx context;
@@ -48,6 +50,21 @@ static uint32_t __cdecl Sr(void* command,const void* handle,const void* p,void* 
     Callback(.5f);SetLastError(172);return 1;
 }
 int main() {
+    InlineKeyEdge edge;
+    if(edge.update(true,false) || edge.update(true,true) || edge.update(false,true) ||
+       !edge.update(true,true) || edge.update(true,true) || edge.update(false,true) ||
+       !edge.update(true,true))return 12;
+    const bool stress=getenv("DLSSNR_PROBE_STRESS")!=nullptr;
+    const bool settingTest=getenv("DLSSNR_PROBE_SETTINGS")!=nullptr;
+    InlineSettings testSettings;
+    if(settingTest) {
+        wchar_t path[32768]{};if(!GetEnvironmentVariableW(L"DLSSNR_INLINE_SHM",path,32768))return 12;
+        auto f=CreateFileW(path,GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(f==INVALID_HANDLE_VALUE)return 12;
+        std::vector<char> data(kHeaderBytes);ShmInitDefaults((ShmHeader*)data.data());
+        DWORD n=0;bool ok=WriteFile(f,data.data(),DWORD(data.size()),&n,nullptr);CloseHandle(f);
+        if(!ok || n!=data.size() || !testSettings.read())return 12;
+    }
     const bool armCycle=getenv("DLSSNR_PROBE_ARM_CYCLE")!=nullptr;
     const bool realMode=getenv("DLSSNR_PROBE_REAL_SR")!=nullptr;
     const unsigned ow=realMode?W*3/2:W,oh=realMode?H*3/2:H;
@@ -117,16 +134,33 @@ int main() {
     }
     auto before=ngx_capture::Snapshot(&p);
     unsigned changed=0,high=0,alpha=0;
-    const unsigned frameCount=armCycle?4:3;
+    const unsigned frameCount=stress?130:settingTest?8:armCycle?4:3;
     for(unsigned frame=0;frame<frameCount;++frame) {
+        if(stress) {
+            VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            allocation.commandPool=context.cmdPool;allocation.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;allocation.commandBufferCount=1;
+            if(vkAllocateCommandBuffers(context.device,&allocation,&context.cmdEval)!=VK_SUCCESS)return 12;
+        }
+        if(settingTest) {
+            auto* h=testSettings.header;
+            if(frame==0 || frame>=4)h->intensityBits=FloatToBits(.65f);
+            h->localToneBits=FloatToBits(.9f);h->localStructureBits=FloatToBits(.8f);
+            h->skinStructureBits=FloatToBits(.25f);h->autoMask=0;
+            if(frame==1)h->intensityBits=FloatToBits(1.5f);
+            h->enabled=(frame==3)?0:1;
+            h->sharpnessBits=FloatToBits(frame==7?.4f:0.f);
+            if(frame==6)h->intensityBits=FloatToBits(NAN);
+            h->controlSeq.fetch_add(1);
+            if(frame==2 || frame==5)Sleep(800);
+        }
         if(armCycle) {
             wchar_t path[32768]{};if(!GetEnvironmentVariableW(L"DLSSNR_ARM_FILE",path,32768))return 11;
             if(frame==0 || frame==3)DeleteFileW(path);
             else {
                 auto token=(ULONGLONG(*)())GetProcAddress(GetModuleHandleW(L"vulkan-1.dll"),"DlssNrArmToken");
                 if(!token)return 11;
-                auto f=_wfopen(path,L"w");if(!f)return 11;
-                fprintf(f,"%lu %llu 1\n",GetCurrentProcessId(),token()+(frame==1?1:0));fclose(f);
+                InlineArm writer;writer.configure();writer.token=token()+(frame==1?1:0);
+                if(!writer.set(true))return 11;
             }
             Sleep(275);
         }
@@ -145,9 +179,12 @@ int main() {
             if(i%4==3) {if(i<pixels.size())alpha+=result[i]==pixels[i];}else high+=(result[i]&0x8000)==0 && result[i]>0x3c00;
         }
         if(before!=ngx_capture::Snapshot(&p)) return 8;
+        if(stress && changed<=100)return 12;
+        if(settingTest && ((frame==3 || frame==6)?changed!=0:changed<=100))return 12;
         if(armCycle && ((frame==2)?changed<=100:changed!=0))return 11;
         if(armCycle && frame<2 && GetModuleHandleW(L"nvngx_dlssnr.dll"))return 11;
     }
+    testSettings.close();
     vkDeviceWaitIdle(context.device);
     if(realMode){srRelease(realHandle);srShutdown(context.device);RemoveCallerSpoof(srSpoof);FreeLibrary(srModule);}
     for(auto* i:{&color,&motion,&exposure,&output,&depth})DestroyImage2D(context,*i);
@@ -164,7 +201,7 @@ int main() {
     // The shim must clean up only its own resources before forwarding destroy.
     vkDestroyDevice(context.device,nullptr);
     const bool expectNr=getenv("DLSSNR_EXPECT_BYPASS")==nullptr;
-    bool pass=calls==frameCount && (realMode || callbacks==frameCount) && replacements==(armCycle?1u:(expectNr?3u:0u)) &&
+    bool pass=calls==frameCount && (realMode || callbacks==frameCount) && replacements==(settingTest?6u:armCycle?1u:(expectNr?frameCount:0u)) &&
         ((expectNr && !armCycle)?changed>100:changed==0) && high>100 && (realMode || alpha==W*H) && errors==0;
     Log("[inline-probe] %s calls=%u callbacks=%u replacements=%u changed=%u hdr=%u alpha=%u validationErrors=%u",
         pass?"PASS":"FAIL",calls,callbacks,replacements,changed,high,alpha,errors);

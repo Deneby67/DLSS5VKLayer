@@ -33,6 +33,17 @@ class Sessions(unittest.TestCase):
         with self.log.open('a') as f:f.write('[nr-inline] arm-state enabled\n[nr-inline] recorded NR-before-SR calls=1\n')
         self.assertEqual(self.status()['status'],'recording')
         self.assertEqual(self.command('off')['status'],'pending')
+    def test_rendering_gate_and_terminal_descriptor_failure(self):
+        self.command('on')
+        with self.log.open('a') as f:f.write('[nr-inline] arm-state enabled\n[nr-inline] recorded NR-before-SR calls=1\n[nr-inline] Rendering state disabled\n')
+        self.assertEqual(self.status()['status'],'bypassed')
+        with self.log.open('a') as f:f.write('[nr-inline] Rendering state enabled\n')
+        self.assertEqual(self.status()['status'],'recording')
+        with self.log.open('a') as f:f.write('[nr-inline] disabled: color descriptor allocation failed (4096 command buffers)\n')
+        self.assertEqual(self.status()['status'],'blocked')
+        self.assertFalse(self.status()['can_enable'])
+        self.assertIn('descriptor',self.status()['reason'])
+        self.assertFalse(self.command('off')['requested_on'])
     def test_wrong_session_rejected(self):
         with self.assertRaises(ValueError):self.command('on','901')
         self.assertFalse(self.log.with_name('arm.txt').exists())

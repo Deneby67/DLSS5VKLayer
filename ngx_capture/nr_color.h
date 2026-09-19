@@ -6,6 +6,7 @@
 #include <map>
 #include <array>
 struct NrColorBridge {
+    static constexpr unsigned maxCommands=4096;
     VkCtx c{};
     GpuImage encoded{},model{},restored{};
     VkSampler sampler{};
@@ -34,9 +35,9 @@ struct NrColorBridge {
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         li.bindingCount=5; li.pBindings=bindings;
         if(vkCreateDescriptorSetLayout(c.device,&li,nullptr,&layout)!=VK_SUCCESS) return false;
-        VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,512},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,128}};
+        VkDescriptorPoolSize sizes[]={{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,maxCommands*8},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,maxCommands*2}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pi.maxSets=128; pi.poolSizeCount=2; pi.pPoolSizes=sizes;
+        pi.maxSets=maxCommands*2; pi.poolSizeCount=2; pi.pPoolSizes=sizes;
         if(vkCreateDescriptorPool(c.device,&pi,nullptr,&pool)!=VK_SUCCESS) return false;
         VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT,0,16};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -54,7 +55,7 @@ struct NrColorBridge {
     bool prepare(VkCommandBuffer cmd,VkImageView color,VkImageView exposure) {
         auto found=sets.find(cmd);
         if(found==sets.end()) {
-            if(sets.size()>=64) return false;
+            if(sets.size()>=maxCommands) return false;
             VkDescriptorSetLayout layouts[]={layout,layout};
             VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
             ai.descriptorPool=pool; ai.descriptorSetCount=2; ai.pSetLayouts=layouts;
