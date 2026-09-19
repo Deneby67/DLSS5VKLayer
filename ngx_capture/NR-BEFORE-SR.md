@@ -11,9 +11,10 @@ no blocked-thread stack was available. The exact cause is unresolved; the
 offscreen tests below do not establish startup compatibility with the game.
 The previous observer and launch wrapper were restored and the application-local
 Vulkan DLL/inline selection marker removed. Reinstallation through the installer
-is disabled until startup has been diagnosed and validated. A separate forward-only
-startup diagnostic is now installed for the next launch, with inline NR forced
-off; its RDR2 menu check is pending. See startup isolation below.
+is disabled until startup has been diagnosed and validated. The forward-only
+startup diagnostic also reproduced the hang and has now been removed. The
+next launch forces builtin Vulkan with both NR paths disabled; menu confirmation
+is pending. Both experimental installers are blocked. See startup isolation below.
 
 The NGX observer dispatches known SuperSampling feature evaluations to an
 application-local Vulkan forwarding shim. The shim records HDR encoding, NR,
@@ -202,3 +203,15 @@ not recur, and this game-level wait must not be conflated with it. The startup
 cause remains unresolved; NR and BDA augmentation were not active. The next
 candidate changes only user32 initialization order, with the inline NR installer
 still blocked. Raw game addresses/stacks stay private in build/.
+
+### Process-attach candidate result and rollback
+
+Matching builtin user32 initialization did not fix RDR2 startup: the next live
+run again presented one frame, returned OUT_OF_DATE on a subsequent present,
+and remained in a game-level wait with display_lock free. Three further stacks
+were saved. No NR or BDA augmentation ran. The application-local Vulkan DLL was
+removed and launch selection changed to builtin Vulkan (`vulkan-1=b`), retaining
+the working observer and disabling both NR paths. The already-running process
+still mapped the deleted experimental file; only a full game restart applies
+this rollback. The separate bootstrap installer is now blocked as well. A fresh
+menu check is pending; no successful NR-before-SR gameplay result is claimed.

@@ -13,6 +13,10 @@ import tempfile
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--dry-run',action='store_true')
 a=p.parse_args()
+if not a.dry_run:
+    p.error('Bootstrap installation is disabled: forward-only RDR2 still hung with NR/BDA off, '
+            'including after matching builtin user32 process-attach initialization. '
+            'The application-local Vulkan DLL has been rolled back. Diagnose offline before another installation.')
 repo=Path(__file__).resolve().parents[1]
 home=Path.home()
 game=home/'.steam/debian-installation/steamapps/common/Red Dead Redemption 2'
