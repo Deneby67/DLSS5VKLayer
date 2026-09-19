@@ -38,11 +38,44 @@ int main(){
     p.reset(cb);bind(cb);p.draw(cb,"direct",true,false);p.destroy(VK_OBJECT_TYPE_PIPELINE,3);p.pipeline(pipeline,info);assert(query().empty());
     p.reset(cb);bind(cb);p.draw(cb,"direct",true,false);p.destroy(VK_OBJECT_TYPE_SHADER_MODULE,1);
     assert(!query().empty()); // Pipeline owns its shader metadata after module destruction.
+    p.view(view,vi);auto rp=fake<VkRenderPass>(12);auto fb=fake<VkFramebuffer>(13);
+    VkAttachmentDescription attachment{};attachment.format=im.format;attachment.samples=VK_SAMPLE_COUNT_1_BIT;
+    VkAttachmentReference ref{0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subs[2]{};for(auto& sub:subs)sub.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subs[0].colorAttachmentCount=1;subs[0].pColorAttachments=&ref;
+    VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};rpInfo.attachmentCount=1;rpInfo.pAttachments=&attachment;rpInfo.subpassCount=2;rpInfo.pSubpasses=subs;p.renderPass(rp,rpInfo);
+    VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};fbInfo.renderPass=rp;fbInfo.attachmentCount=1;fbInfo.pAttachments=&view;p.framebuffer(fb,fbInfo);
+    VkRenderPassBeginInfo beginPass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};beginPass.renderPass=rp;beginPass.framebuffer=fb;beginPass.renderArea.extent={1920,1080};
+    p.reset(cb);bind(cb);p.beginPass(cb,beginPass);p.draw(cb,"direct",true,false);p.nextSubpass(cb);p.draw(cb,"direct",true,false);p.endPass(cb);p.draw(cb,"direct",true,false);
+    links=query();assert(links.at(4).size()==3);
+    unsigned withAttachment=0,emptySubpass=0,unresolved=0;
+    for(const auto& l:links.at(4)){const auto& t=l["render_targets"];
+        if(t["status"]=="no resolved render scope")++unresolved;
+        else if(t["subpass"]==1 && t["attachments"].empty())++emptySubpass;
+        else if(t["attachments"].size()==1 && t["attachments"][0]["valid"]==true)++withAttachment;
+    }
+    assert(withAttachment==1 && emptySubpass==1 && unresolved==1);
+    fbInfo.flags=VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT;fbInfo.pAttachments=nullptr;p.framebuffer(fb,fbInfo);
+    VkRenderPassAttachmentBeginInfo imageless{VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO};imageless.attachmentCount=1;imageless.pAttachments=&view;beginPass.pNext=&imageless;
+    VkCommandBufferInheritanceInfo inherit{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};inherit.renderPass=rp;
+    VkCommandBufferBeginInfo start{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};start.flags=VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;start.pInheritanceInfo=&inherit;
+    p.reset(cb);p.reset(secondary);p.inheritance(secondary,start);bind(secondary);p.draw(secondary,"direct",true,false);
+    p.beginPass(cb,beginPass);p.execute(cb,1,&secondary);p.endPass(cb);
+    assert(query().at(4)[0]["render_targets"]["attachments"][0]["valid"]==true);
+    p.destroy(VK_OBJECT_TYPE_FRAMEBUFFER,13);p.framebuffer(fb,fbInfo);
+    assert(query().at(4)[0]["render_targets"]["status"]=="stale render scope");
+    VkRenderingAttachmentInfo dynamicColor{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};dynamicColor.imageView=view;dynamicColor.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkRenderingInfo dynamic{VK_STRUCTURE_TYPE_RENDERING_INFO};dynamic.colorAttachmentCount=1;dynamic.pColorAttachments=&dynamicColor;dynamic.renderArea.extent={1920,1080};
+    p.reset(cb);bind(cb);p.beginRendering(cb,dynamic);p.draw(cb,"direct",true,false);p.endPass(cb);
+    assert(query().at(4)[0]["render_targets"]["dynamic_rendering"]==true);
+    assert(query().at(4)[0]["render_targets"]["attachments"][0]["valid"]==true);
+    p.destroy(VK_OBJECT_TYPE_IMAGE_VIEW,11);p.view(view,vi);
+    assert(query().at(4)[0]["render_targets"]["attachments"][0]["valid"]==false);
     p.commandPool(cp,false);assert(query().empty());
     bind(cb);p.draw(cb,"direct",true,false);p.commandPool(cp,true);assert(query().empty());
     DrawProbe unsupported;unsupported.disable("unsupported feature");unsupported.command(cb,cp);unsupported.layout(layout);unsupported.shader(shader,std::string(64,'a'));
     unsupported.pipeline(pipeline,info);unsupported.set(set,pool);unsupported.bindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
     unsupported.bindSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&set,0);unsupported.draw(cb,"direct",true,false);
     assert(unsupported.links(1,&cb).empty());
-    std::cout<<"PASS: draw-only association, zero draw, descriptor revisions, handle generations, layout mismatch, dynamic offsets, secondary reset, shader lifetime and unsupported mode\n";
+    std::cout<<"PASS: draw associations, descriptor generations, shader lifetime, subpasses, imageless/inherited/dynamic targets, stale views/framebuffers and unsupported mode\n";
 }

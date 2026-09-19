@@ -237,6 +237,9 @@ void Register(VkDevice device,PFN_vkGetDeviceProcAddr next,const VkPhysicalDevic
             "vkUpdateDescriptorSetWithTemplate","vkUpdateDescriptorSetWithTemplateKHR"})
             if(auto fn=next(device,name))c->functions[name]=fn;
         for(const char* name:{"vkCmdBindPipeline","vkCmdDraw","vkCmdDrawIndexed","vkCmdDrawIndirect","vkCmdDrawIndexedIndirect",
+            "vkCreateRenderPass2","vkCreateRenderPass2KHR","vkCmdBeginRenderPass","vkCmdNextSubpass","vkCmdEndRenderPass",
+            "vkCmdBeginRenderPass2","vkCmdBeginRenderPass2KHR","vkCmdNextSubpass2","vkCmdNextSubpass2KHR","vkCmdEndRenderPass2","vkCmdEndRenderPass2KHR",
+            "vkCmdBeginRendering","vkCmdBeginRenderingKHR","vkCmdEndRendering","vkCmdEndRenderingKHR",
             "vkCmdDrawIndirectCount","vkCmdDrawIndirectCountKHR","vkCmdDrawIndirectCountAMD",
             "vkCmdDrawIndexedIndirectCount","vkCmdDrawIndexedIndirectCountKHR","vkCmdDrawIndexedIndirectCountAMD",
             "vkCmdBindDescriptorSets2","vkCmdBindDescriptorSets2KHR","vkCmdPushDescriptorSet","vkCmdPushDescriptorSetKHR",
@@ -364,13 +367,19 @@ static VkResult VKAPI_CALL CreatePipelineLayout(VkDevice d,const VkPipelineLayou
     for (uint32_t i=0;i<ci->pushConstantRangeCount;++i) { const auto& p=ci->pPushConstantRanges[i]; push.push_back({{"offset",p.offset},{"bytes",p.size},{"stages",p.stageFlags}}); }
     s.Event({{"event","pipeline_layout"},{"device",ctx.id},{"id",ctx.New(VK_OBJECT_TYPE_PIPELINE_LAYOUT,Handle(*out))},{"sets",sets},{"push_constants",push}});
 CREATE_END
-CREATE_START(RenderPass,VkRenderPassCreateInfo,VkRenderPass)
+static VkResult VKAPI_CALL CreateRenderPass(VkDevice d,const VkRenderPassCreateInfo* ci,const VkAllocationCallbacks* a,VkRenderPass* out) {
+    auto c=Get(d);auto result=Next<PFN_vkCreateRenderPass>(d,c,"vkCreateRenderPass")(d,ci,a,out);
+    if(result==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.draws().renderPass(*out,*ci);});
+    if(result==VK_SUCCESS)Record(c,[&](Context& ctx,Session& s){
     Json attachments=Json::array(),subpasses=Json::array();
     for (uint32_t i=0;i<ci->attachmentCount;++i) { const auto& x=ci->pAttachments[i]; attachments.push_back({{"format",x.format},{"samples",x.samples},{"load",x.loadOp},{"store",x.storeOp},{"initial_layout",x.initialLayout},{"final_layout",x.finalLayout}}); }
     for (uint32_t i=0;i<ci->subpassCount;++i) { const auto& p=ci->pSubpasses[i]; Json colors=Json::array(); for(uint32_t j=0;j<p.colorAttachmentCount;++j) colors.push_back(p.pColorAttachments[j].attachment); subpasses.push_back({{"colors",colors},{"depth",p.pDepthStencilAttachment?p.pDepthStencilAttachment->attachment:VK_ATTACHMENT_UNUSED}}); }
     s.Event({{"event","render_pass"},{"device",ctx.id},{"id",ctx.New(VK_OBJECT_TYPE_RENDER_PASS,Handle(*out))},{"attachments",attachments},{"subpasses",subpasses}});
 CREATE_END
-CREATE_START(Framebuffer,VkFramebufferCreateInfo,VkFramebuffer)
+static VkResult VKAPI_CALL CreateFramebuffer(VkDevice d,const VkFramebufferCreateInfo* ci,const VkAllocationCallbacks* a,VkFramebuffer* out) {
+    auto c=Get(d);auto result=Next<PFN_vkCreateFramebuffer>(d,c,"vkCreateFramebuffer")(d,ci,a,out);
+    if(result==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.draws().framebuffer(*out,*ci);});
+    if(result==VK_SUCCESS)Record(c,[&](Context& ctx,Session& s){
     Json views=Json::array();
     if (!(ci->flags&VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT)) for(uint32_t i=0;i<ci->attachmentCount;++i) views.push_back(Ref(ctx,VK_OBJECT_TYPE_IMAGE_VIEW,Handle(ci->pAttachments[i])));
     s.Event({{"event","framebuffer"},{"device",ctx.id},{"id",ctx.New(VK_OBJECT_TYPE_FRAMEBUFFER,Handle(*out))},
@@ -378,6 +387,12 @@ CREATE_START(Framebuffer,VkFramebufferCreateInfo,VkFramebuffer)
 CREATE_END
 #undef CREATE_START
 #undef CREATE_END
+#define RP2(Name) \
+static VkResult VKAPI_CALL Name(VkDevice d,const VkRenderPassCreateInfo2* ci,const VkAllocationCallbacks* a,VkRenderPass* out) { \
+ auto c=Get(d);auto result=Next<PFN_vkCreateRenderPass2>(d,c,"vk" #Name)(d,ci,a,out); \
+ if(result==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.draws().renderPass2(*out,*ci);});return result; }
+RP2(CreateRenderPass2) RP2(CreateRenderPass2KHR)
+#undef RP2
 static Json Stage(Context& ctx,const VkPipelineShaderStageCreateInfo& x) {
     auto hash=ctx.shaders.find(Handle(x.module));
     return {{"stage",x.stage},{"shader",Ref(ctx,VK_OBJECT_TYPE_SHADER_MODULE,Handle(x.module))},
@@ -511,7 +526,7 @@ static void VKAPI_CALL FreeCommandBuffers(VkDevice d,VkCommandPool pool,uint32_t
 }
 static VkResult VKAPI_CALL BeginCommandBuffer(VkCommandBuffer cb,const VkCommandBufferBeginInfo* i) {
     auto c=GetCommand(cb);auto r=CommandNext<PFN_vkBeginCommandBuffer>(cb,c,"vkBeginCommandBuffer")(cb,i);
-    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.begin(cb);});return r;
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.begin(cb);p.draws().inheritance(cb,*i);});return r;
 }
 static VkResult VKAPI_CALL ResetCommandBuffer(VkCommandBuffer cb,VkCommandBufferResetFlags flags) {
     auto c=GetCommand(cb);auto r=CommandNext<PFN_vkResetCommandBuffer>(cb,c,"vkResetCommandBuffer")(cb,flags);
@@ -536,6 +551,48 @@ static void VKAPI_CALL CmdBindPipeline(VkCommandBuffer cb,VkPipelineBindPoint po
     auto c=GetCommand(cb);CommandNext<PFN_vkCmdBindPipeline>(cb,c,"vkCmdBindPipeline")(cb,point,pipeline);
     Camera(c,[&](CameraProbe& p){p.draws().bindPipeline(cb,point,pipeline);});
 }
+static void VKAPI_CALL CmdBeginRenderPass(VkCommandBuffer cb,const VkRenderPassBeginInfo* info,VkSubpassContents contents){
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdBeginRenderPass>(cb,c,"vkCmdBeginRenderPass")(cb,info,contents);
+    Camera(c,[&](CameraProbe& p){p.draws().beginPass(cb,*info);});
+}
+static void VKAPI_CALL CmdNextSubpass(VkCommandBuffer cb,VkSubpassContents contents){
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdNextSubpass>(cb,c,"vkCmdNextSubpass")(cb,contents);
+    Camera(c,[&](CameraProbe& p){p.draws().nextSubpass(cb);});
+}
+static void VKAPI_CALL CmdEndRenderPass(VkCommandBuffer cb){
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdEndRenderPass>(cb,c,"vkCmdEndRenderPass")(cb);
+    Camera(c,[&](CameraProbe& p){p.draws().endPass(cb);});
+}
+#define BEGIN_RP2(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,const VkRenderPassBeginInfo* info,const VkSubpassBeginInfo* begin){ \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdBeginRenderPass2>(cb,c,"vk" #Name)(cb,info,begin); \
+ Camera(c,[&](CameraProbe& p){p.draws().beginPass(cb,*info);}); }
+BEGIN_RP2(CmdBeginRenderPass2) BEGIN_RP2(CmdBeginRenderPass2KHR)
+#undef BEGIN_RP2
+#define NEXT_RP2(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,const VkSubpassBeginInfo* begin,const VkSubpassEndInfo* end){ \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdNextSubpass2>(cb,c,"vk" #Name)(cb,begin,end); \
+ Camera(c,[&](CameraProbe& p){p.draws().nextSubpass(cb);}); }
+NEXT_RP2(CmdNextSubpass2) NEXT_RP2(CmdNextSubpass2KHR)
+#undef NEXT_RP2
+#define END_RP2(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,const VkSubpassEndInfo* end){ \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdEndRenderPass2>(cb,c,"vk" #Name)(cb,end); \
+ Camera(c,[&](CameraProbe& p){p.draws().endPass(cb);}); }
+END_RP2(CmdEndRenderPass2) END_RP2(CmdEndRenderPass2KHR)
+#undef END_RP2
+#define BEGIN_RENDERING(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,const VkRenderingInfo* info){ \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdBeginRendering>(cb,c,"vk" #Name)(cb,info); \
+ Camera(c,[&](CameraProbe& p){p.draws().beginRendering(cb,*info);}); }
+BEGIN_RENDERING(CmdBeginRendering) BEGIN_RENDERING(CmdBeginRenderingKHR)
+#undef BEGIN_RENDERING
+#define END_RENDERING(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb){ \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdEndRendering>(cb,c,"vk" #Name)(cb); \
+ Camera(c,[&](CameraProbe& p){p.draws().endPass(cb);}); }
+END_RENDERING(CmdEndRendering) END_RENDERING(CmdEndRenderingKHR)
+#undef END_RENDERING
 static void VKAPI_CALL CmdDraw(VkCommandBuffer cb,uint32_t vertices,uint32_t instances,uint32_t firstVertex,uint32_t firstInstance) {
     auto c=GetCommand(cb);CommandNext<PFN_vkCmdDraw>(cb,c,"vkCmdDraw")(cb,vertices,instances,firstVertex,firstInstance);
     Camera(c,[&](CameraProbe& p){p.draws().draw(cb,"direct",vertices && instances,false);});
@@ -620,6 +677,11 @@ PFN_vkVoidFunction Lookup(const char* name,PFN_vkGetDeviceProcAddr fallback) noe
     HOOK(AllocateCommandBuffers) HOOK(FreeCommandBuffers) HOOK(BeginCommandBuffer) HOOK(ResetCommandBuffer)
     HOOK(ResetCommandPool) HOOK(DestroyCommandPool) HOOK(CmdBindDescriptorSets) HOOK(CmdExecuteCommands)
     HOOK(CmdBindPipeline) HOOK(CmdDraw) HOOK(CmdDrawIndexed) HOOK(CmdDrawIndirect) HOOK(CmdDrawIndexedIndirect)
+    HOOK(CreateRenderPass2) HOOK(CreateRenderPass2KHR)
+    HOOK(CmdBeginRenderPass) HOOK(CmdNextSubpass) HOOK(CmdEndRenderPass)
+    HOOK(CmdBeginRenderPass2) HOOK(CmdNextSubpass2) HOOK(CmdEndRenderPass2)
+    HOOK(CmdBeginRenderPass2KHR) HOOK(CmdNextSubpass2KHR) HOOK(CmdEndRenderPass2KHR)
+    HOOK(CmdBeginRendering) HOOK(CmdEndRendering) HOOK(CmdBeginRenderingKHR) HOOK(CmdEndRenderingKHR)
     HOOK(CmdDrawIndirectCount) HOOK(CmdDrawIndexedIndirectCount) HOOK(CmdDrawIndirectCountKHR) HOOK(CmdDrawIndexedIndirectCountKHR)
     HOOK(CmdDrawIndirectCountAMD) HOOK(CmdDrawIndexedIndirectCountAMD)
     HOOK(CmdBindDescriptorSets2) HOOK(CmdBindDescriptorSets2KHR)

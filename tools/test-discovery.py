@@ -91,11 +91,13 @@ with tempfile.TemporaryDirectory(prefix='fg-discovery-test-') as tmp:
     assert len(analysis.analyze(capped)['shader_binaries_omitted'])==1
     env.pop('DLSSFG_SHADER_LIMIT_MIB',None)
     env['DLSSFG_METADATA_LIMIT_MIB']='1'
-    for camera_name in ('camera','camera-device-local','camera-draw'):
+    for camera_name in ('camera','camera-device-local','camera-draw','camera-draw-rp2'):
         if camera_name!='camera':env['DLSSFG_TEST_DEVICE_LOCAL_CAMERA']='1'
         else:env.pop('DLSSFG_TEST_DEVICE_LOCAL_CAMERA',None)
-        if camera_name=='camera-draw':env['DLSSFG_TEST_DRAW_ASSOCIATIONS']='1'
+        if camera_name.startswith('camera-draw'):env['DLSSFG_TEST_DRAW_ASSOCIATIONS']='1'
         else:env.pop('DLSSFG_TEST_DRAW_ASSOCIATIONS',None)
+        if camera_name=='camera-draw-rp2':env['DLSSFG_TEST_RENDERPASS2']='1'
+        else:env.pop('DLSSFG_TEST_RENDERPASS2',None)
         run('RDR2.exe',root/camera_name,'camera')
         camera=next((root/camera_name).iterdir())
         assert (camera/'stopped.txt').read_text()=='metadata limit reached'
@@ -107,12 +109,16 @@ with tempfile.TemporaryDirectory(prefix='fg-discovery-test-') as tmp:
             assert bytes.fromhex(s['bytes_hex'])==struct.pack('<116f',*(base+i*.25 for i in range(116)))
             assert s['offset']==256 and s['binding']==29 and not s['gpu_completion_verified'] and not s['camera_verified']
             assert any(r['event']=='submission_result' and r['submission']==s['submission'] and r['result']==0 for r in rows)
-            if camera_name=='camera-draw':
+            if camera_name.startswith('camera-draw'):
                 assert len(s['draw_links'])==1
                 link=s['draw_links'][0]
                 assert link['kind']=='direct' and link['recorded_calls']==1
                 assert link['set_index']==0 and not link['gpu_execution_verified']
                 assert link['stages'][0]['stage']==1 and link['stages'][0]['sha256']==draw_shader_hash
+                targets=link['render_targets']
+                assert targets['status']=='tracked attachment references'
+                assert [(t['role'],t['view_format']) for t in targets['attachments']]==[('color',83),('depth_stencil',126)]
+                assert all(t['valid'] and t['extent']==[32,24,1] for t in targets['attachments'])
             else:assert s['draw_links']==[]
         assert rows[-1]['event']=='end' and rows[-1]['samples']==3
         assert rows[-1]['misses']['memory not mapped']>=1

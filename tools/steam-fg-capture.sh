@@ -13,6 +13,9 @@ fi
 if [[ "${DLSSFG_DISCOVERY:-auto}" == 1 ]] ||
    [[ "${DLSSFG_DISCOVERY:-auto}" == auto && -f "$HOME/.config/dlssnr/fg-discovery.enabled" ]]; then
   export DLSSFG_DISCOVERY_DIR="${DLSSFG_DISCOVERY_DIR:-$HOME/.local/state/dlssnr/discovery}"
+  # The first 128 MiB missed the fragment shader paired with the camera pass.
+  # Keep the larger dump bounded and preserve explicit user overrides.
+  export DLSSFG_SHADER_LIMIT_MIB="${DLSSFG_SHADER_LIMIT_MIB:-512}"
 else
   unset DLSSFG_DISCOVERY_DIR
 fi

@@ -26,14 +26,41 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};pli.setLayoutCount=1;pli.pSetLayouts=&layout;
     VkPipelineLayout pl{};OK(vkCreatePipelineLayout(d,&pli,nullptr,&pl));
     const bool drawAssociations=std::getenv("DLSSFG_TEST_DRAW_ASSOCIATIONS")!=nullptr;
+    const bool renderPass2=std::getenv("DLSSFG_TEST_RENDERPASS2")!=nullptr;
     VkPipeline pipeline{};VkRenderPass renderPass{};VkFramebuffer framebuffer{};
+    std::array<VkImage,2> targetImages{};std::array<VkImageView,2> targetViews{};std::array<VkDeviceMemory,2> targetMemory{};
     if(drawAssociations){
         VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};sm.codeSize=sizeof(cameraDrawSpirv);sm.pCode=cameraDrawSpirv;
         VkShaderModule shader{};OK(vkCreateShaderModule(d,&sm,nullptr,&shader));
-        VkSubpassDescription sub{};sub.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;
-        VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};rp.subpassCount=1;rp.pSubpasses=&sub;
-        OK(vkCreateRenderPass(d,&rp,nullptr,&renderPass));
+        std::array<VkAttachmentDescription,2> attachments{};
+        for(unsigned i=0;i<2;++i){
+            auto format=i?VK_FORMAT_D32_SFLOAT:VK_FORMAT_R16G16_SFLOAT;
+            VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};image.imageType=VK_IMAGE_TYPE_2D;image.format=format;
+            image.extent={32,24,1};image.mipLevels=image.arrayLayers=1;image.samples=VK_SAMPLE_COUNT_1_BIT;
+            image.usage=(i?VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT:VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            OK(vkCreateImage(d,&image,nullptr,&targetImages[i]));VkMemoryRequirements mr{};vkGetImageMemoryRequirements(d,targetImages[i],&mr);
+            uint32_t mt=0;while(mt<props.memoryTypeCount && !(mr.memoryTypeBits&(1u<<mt)))++mt;
+            VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocation.allocationSize=mr.size;allocation.memoryTypeIndex=mt;
+            OK(vkAllocateMemory(d,&allocation,nullptr,&targetMemory[i]));OK(vkBindImageMemory(d,targetImages[i],targetMemory[i],0));
+            VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};view.image=targetImages[i];view.viewType=VK_IMAGE_VIEW_TYPE_2D;view.format=format;
+            view.subresourceRange={i?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};OK(vkCreateImageView(d,&view,nullptr,&targetViews[i]));
+            auto& a=attachments[i];a.format=format;a.samples=VK_SAMPLE_COUNT_1_BIT;a.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;a.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+            a.stencilLoadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;a.stencilStoreOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            a.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;a.finalLayout=i?VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+        VkAttachmentReference color{0,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},depth{1,VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sub{};sub.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;sub.colorAttachmentCount=1;sub.pColorAttachments=&color;sub.pDepthStencilAttachment=&depth;
+        VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};rp.subpassCount=1;rp.pSubpasses=&sub;rp.attachmentCount=2;rp.pAttachments=attachments.data();
+        if(renderPass2){
+            std::array<VkAttachmentDescription2,2> as{};for(unsigned i=0;i<2;++i){auto& a=as[i];const auto& b=attachments[i];a.sType=VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+                a.format=b.format;a.samples=b.samples;a.loadOp=b.loadOp;a.storeOp=b.storeOp;a.stencilLoadOp=b.stencilLoadOp;a.stencilStoreOp=b.stencilStoreOp;a.initialLayout=b.initialLayout;a.finalLayout=b.finalLayout;}
+            VkAttachmentReference2 c{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2},z{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};c.attachment=0;c.layout=color.layout;z.attachment=1;z.layout=depth.layout;
+            VkSubpassDescription2 s{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};s.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;s.colorAttachmentCount=1;s.pColorAttachments=&c;s.pDepthStencilAttachment=&z;
+            VkRenderPassCreateInfo2 rp2Info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};rp2Info.attachmentCount=2;rp2Info.pAttachments=as.data();rp2Info.subpassCount=1;rp2Info.pSubpasses=&s;
+            OK(vkCreateRenderPass2(d,&rp2Info,nullptr,&renderPass));
+        }else{OK(vkCreateRenderPass(d,&rp,nullptr,&renderPass));}
         VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};fb.renderPass=renderPass;fb.width=fb.height=fb.layers=1;
+        fb.attachmentCount=2;fb.pAttachments=targetViews.data();
         OK(vkCreateFramebuffer(d,&fb,nullptr,&framebuffer));
         VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};stage.stage=VK_SHADER_STAGE_VERTEX_BIT;stage.module=shader;stage.pName="main";
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -68,10 +95,12 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
         begin.flags=0;
         OK(vkBeginCommandBuffer(primary,&begin));
         VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};rp.renderPass=renderPass;rp.framebuffer=framebuffer;rp.renderArea.extent={1,1};
-        if(drawAssociations)vkCmdBeginRenderPass(primary,&rp,useSecondary?VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS:VK_SUBPASS_CONTENTS_INLINE);
+        std::array<VkClearValue,2> clears{};clears[1].depthStencil.depth=1;rp.clearValueCount=2;rp.pClearValues=clears.data();
+        VkSubpassBeginInfo start{VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO};start.contents=useSecondary?VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS:VK_SUBPASS_CONTENTS_INLINE;
+        if(drawAssociations){if(renderPass2)vkCmdBeginRenderPass2(primary,&rp,&start);else vkCmdBeginRenderPass(primary,&rp,start.contents);}
         if(useSecondary)vkCmdExecuteCommands(primary,1,&secondary);
         else commands(primary);
-        if(drawAssociations)vkCmdEndRenderPass(primary);
+        if(drawAssociations){if(renderPass2){VkSubpassEndInfo end{VK_STRUCTURE_TYPE_SUBPASS_END_INFO};vkCmdEndRenderPass2(primary,&end);}else vkCmdEndRenderPass(primary);}
         OK(vkEndCommandBuffer(primary));
     };
     bool useSubmit2=false;
@@ -107,6 +136,7 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
     if(pipeline)vkDestroyPipeline(d,pipeline,nullptr);
     if(framebuffer)vkDestroyFramebuffer(d,framebuffer,nullptr);
     if(renderPass)vkDestroyRenderPass(d,renderPass,nullptr);
+    for(unsigned i=0;i<2;++i)if(targetImages[i]){vkDestroyImageView(d,targetViews[i],nullptr);vkDestroyImage(d,targetImages[i],nullptr);vkFreeMemory(d,targetMemory[i],nullptr);}
     vkDestroyPipelineLayout(d,pl,nullptr);vkDestroyDescriptorSetLayout(d,layout,nullptr);
     vkUnmapMemory(d,memory);vkDestroyBuffer(d,buffer,nullptr);vkFreeMemory(d,memory,nullptr);
     puts("PASS: requested camera snapshots, binding/map/descriptor offsets, secondary command, unmap and pool reset");

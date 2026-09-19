@@ -21,6 +21,14 @@ public:
     void image(VkImage,const VkImageCreateInfo&);
     void view(VkImageView,const VkImageViewCreateInfo&);
     void descriptor(const VkWriteDescriptorSet&);
+    void renderPass(VkRenderPass,const VkRenderPassCreateInfo&);
+    void renderPass2(VkRenderPass,const VkRenderPassCreateInfo2&);
+    void framebuffer(VkFramebuffer,const VkFramebufferCreateInfo&);
+    void inheritance(VkCommandBuffer,const VkCommandBufferBeginInfo&);
+    void beginPass(VkCommandBuffer,const VkRenderPassBeginInfo&);
+    void nextSubpass(VkCommandBuffer);
+    void endPass(VkCommandBuffer);
+    void beginRendering(VkCommandBuffer,const VkRenderingInfo&);
     void destroy(VkObjectType,uint64_t);
     void set(VkDescriptorSet,VkDescriptorPool);
     void write(VkDescriptorSet);

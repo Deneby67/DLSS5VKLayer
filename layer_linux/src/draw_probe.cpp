@@ -14,15 +14,27 @@ struct DrawProbe::Impl {
     struct Set {uint64_t gen,pool,revision=0;std::map<uint32_t,ImageBinding> images;};
     struct Image {uint64_t gen;VkFormat format;VkExtent3D extent;VkImageUsageFlags usage;};
     struct View {uint64_t gen;Ref image;VkFormat format;VkImageSubresourceRange range;};
+    struct Subpass {std::vector<VkAttachmentReference> colors;VkAttachmentReference depth{VK_ATTACHMENT_UNUSED,VK_IMAGE_LAYOUT_UNDEFINED};};
+    struct RenderPass {uint64_t gen;std::vector<VkAttachmentDescription> attachments;std::vector<Subpass> subpasses;};
+    struct Framebuffer {uint64_t gen;bool imageless;std::vector<Ref> views;};
+    struct Target {Ref view;std::string role;uint32_t index;VkImageLayout layout;VkAttachmentLoadOp load;VkAttachmentStoreOp store;};
+    struct Pass {
+        uint64_t id=0;Ref renderPass,framebuffer;uint32_t subpass=0;VkRect2D area{};
+        std::vector<Ref> views;std::vector<Target> targets;
+        std::string status="unresolved";bool dynamic=false;
+    };
     struct Pipeline {uint64_t gen,layout;Json stages;};
-    struct Draw {Ref pipeline,set;uint64_t revision,first,last,count;std::string kind;bool indirect;};
-    using Key=std::tuple<uint64_t,uint64_t,uint64_t,std::string>;
+    struct Draw {Ref pipeline,set;uint64_t revision,first,last,count;std::string kind;bool indirect;std::shared_ptr<Pass> targets;};
+    using Key=std::tuple<uint64_t,uint64_t,uint64_t,std::string,uint64_t>;
+    struct Child {uint64_t gen;std::shared_ptr<Pass> pass;};
     struct Command {
         uint64_t gen=0,pool=0,ordinal=0,layout=0;
         Ref pipeline,set;
+        Ref inheritedRenderPass,inheritedFramebuffer;uint32_t inheritedSubpass=0;
+        std::shared_ptr<Pass> pass;
         bool truncated=false;
         std::map<Key,Draw> draws;
-        std::map<uint64_t,uint64_t> children;
+        std::map<uint64_t,Child> children;
     };
     std::map<uint64_t,std::string> shaders;
     std::map<uint64_t,uint64_t> layouts;
@@ -30,17 +42,63 @@ struct DrawProbe::Impl {
     std::map<uint64_t,Set> sets;
     std::map<uint64_t,Image> images;
     std::map<uint64_t,View> views;
+    std::map<uint64_t,RenderPass> renderPasses;
+    std::map<uint64_t,Framebuffer> framebuffers;
     std::map<uint64_t,Command> commands;
     uint64_t next=0,totalDraws=0;
     std::array<uint64_t,7> observations{};
     std::string disabled;
     uint64_t gen() {
-        if(shaders.size()+layouts.size()+pipelines.size()+sets.size()+commands.size()+images.size()+views.size()>500000)
+        if(shaders.size()+layouts.size()+pipelines.size()+sets.size()+commands.size()+images.size()+views.size()+renderPasses.size()+framebuffers.size()>500000)
             throw std::runtime_error("draw association object limit");
         return ++next;
     }
     void clear(Command& c) {totalDraws-=c.draws.size();auto pool=c.pool;c=Command{};c.pool=pool;c.gen=gen();}
-    void collect(uint64_t cb,uint64_t generation,std::set<uint64_t>& visited,std::map<uint64_t,Json>& result) {
+    Ref viewRef(VkImageView handle){auto v=views.find(h(handle));return v==views.end()?Ref{}:Ref{h(handle),v->second.gen};}
+    void fill(Pass& pass) {
+        pass.targets.clear();auto rp=renderPasses.find(pass.renderPass.handle);
+        if(rp==renderPasses.end() || rp->second.gen!=pass.renderPass.gen){pass.status="untracked render pass";return;}
+        if(pass.subpass>=rp->second.subpasses.size()){pass.status="untracked subpass";return;}
+        auto add=[&](VkAttachmentReference ref,const char* role,uint32_t index){
+            if(ref.attachment==VK_ATTACHMENT_UNUSED)return;
+            if(ref.attachment>=pass.views.size() || ref.attachment>=rp->second.attachments.size()){pass.status="unresolved attachment";return;}
+            const auto& a=rp->second.attachments[ref.attachment];
+            pass.targets.push_back({pass.views[ref.attachment],role,index,ref.layout,a.loadOp,a.storeOp});
+        };
+        pass.status="tracked attachment references";
+        const auto& sub=rp->second.subpasses[pass.subpass];
+        for(uint32_t i=0;i<sub.colors.size();++i)add(sub.colors[i],"color",i);
+        add(sub.depth,"depth_stencil",0);
+    }
+    Json targets(const std::shared_ptr<Pass>& pass) {
+        if(!pass)return {{"status","no resolved render scope"}};
+        Json result={{"status",pass->status},{"dynamic_rendering",pass->dynamic},
+            {"render_pass_generation",pass->renderPass.gen},{"framebuffer_generation",pass->framebuffer.gen},
+            {"subpass",pass->subpass},{"render_area",{pass->area.offset.x,pass->area.offset.y,pass->area.extent.width,pass->area.extent.height}},
+            {"gpu_contents_captured",false},{"attachments",Json::array()}};
+        if(!pass->dynamic){
+            auto rp=renderPasses.find(pass->renderPass.handle);auto fb=framebuffers.find(pass->framebuffer.handle);
+            if(rp==renderPasses.end() || rp->second.gen!=pass->renderPass.gen || fb==framebuffers.end() || fb->second.gen!=pass->framebuffer.gen){result["status"]="stale render scope";return result;}
+        }
+        for(const auto& t:pass->targets){
+            Json entry={{"role",t.role},{"attachment_slot",t.index},{"declared_layout",t.layout},{"load",t.load},{"store",t.store},{"valid",false}};
+            auto v=views.find(t.view.handle);
+            if(v!=views.end() && v->second.gen==t.view.gen){
+                auto im=images.find(v->second.image.handle);
+                if(im!=images.end() && im->second.gen==v->second.image.gen){
+                    entry.update({{"valid",true},{"image_generation",im->second.gen},{"view_generation",v->second.gen},
+                        {"view_format",v->second.format},{"image_format",im->second.format},
+                        {"extent",{im->second.extent.width,im->second.extent.height,im->second.extent.depth}},
+                        {"usage",im->second.usage},{"aspect",v->second.range.aspectMask},
+                        {"base_mip",v->second.range.baseMipLevel},{"mips",v->second.range.levelCount},
+                        {"base_layer",v->second.range.baseArrayLayer},{"layers",v->second.range.layerCount}});
+                }
+            }
+            result["attachments"].push_back(std::move(entry));
+        }
+        return result;
+    }
+    void collect(uint64_t cb,uint64_t generation,std::set<uint64_t>& visited,std::map<uint64_t,Json>& result,const std::shared_ptr<Pass>& inherited={}) {
         if(!visited.insert(cb).second)return;
         if(visited.size()>256)throw std::runtime_error("draw secondary traversal limit");
         auto it=commands.find(cb);if(it==commands.end() || (generation && it->second.gen!=generation))return;
@@ -52,6 +110,10 @@ struct DrawProbe::Impl {
             auto& links=result[d.set.handle];if(links.is_null())links=Json::array();
             // Bounded examples, never an exhaustive draw count or ordered GPU trace.
             if(links.size()>=4)continue;
+            auto target=d.targets;
+            if(!target && inherited && !inherited->dynamic && c.inheritedRenderPass.handle==inherited->renderPass.handle &&
+               c.inheritedRenderPass.gen==inherited->renderPass.gen && c.inheritedSubpass==inherited->subpass &&
+               (!c.inheritedFramebuffer.handle || (c.inheritedFramebuffer.handle==inherited->framebuffer.handle && c.inheritedFramebuffer.gen==inherited->framebuffer.gen)))target=inherited;
             Json imageBindings=Json::array();
             for(const auto& binding:s->second.images){
                 const auto& ref=binding.second;auto view=views.find(ref.view.handle);
@@ -71,11 +133,12 @@ struct DrawProbe::Impl {
                 {"first_draw_ordinal",d.first},{"last_draw_ordinal",d.last},{"recorded_calls",d.count},
                 {"set_generation",d.set.gen},{"descriptor_revision",d.revision},{"set_index",0},
                 {"set0_image_bindings",imageBindings},{"image_binding_scope","at most 16 single-element writes; no resource contents"},
+                {"render_targets",targets(target)},
                 {"command_examples_truncated",c.truncated},{"gpu_execution_verified",false},
                 {"descriptor_binding_used_by_shader_verified",false}});
             if(result.size()>8192)throw std::runtime_error("draw submitted set limit");
         }
-        for(auto child:c.children)collect(child.first,child.second,visited,result);
+        for(auto child:c.children)collect(child.first,child.second.gen,visited,result,child.second.pass);
     }
 };
 DrawProbe::DrawProbe():p(new Impl){}
@@ -108,6 +171,8 @@ void DrawProbe::destroy(VkObjectType type,uint64_t object) {
     if(type==VK_OBJECT_TYPE_PIPELINE)p->pipelines.erase(object);
     if(type==VK_OBJECT_TYPE_IMAGE)p->images.erase(object);
     if(type==VK_OBJECT_TYPE_IMAGE_VIEW)p->views.erase(object);
+    if(type==VK_OBJECT_TYPE_RENDER_PASS)p->renderPasses.erase(object);
+    if(type==VK_OBJECT_TYPE_FRAMEBUFFER)p->framebuffers.erase(object);
 }
 void DrawProbe::image(VkImage image,const VkImageCreateInfo& info){if(p->disabled.empty())p->images[h(image)]={p->gen(),info.format,info.extent,info.usage};}
 void DrawProbe::view(VkImageView view,const VkImageViewCreateInfo& info){
@@ -123,6 +188,82 @@ void DrawProbe::descriptor(const VkWriteDescriptorSet& w){
     auto view=p->views.find(h(w.pImageInfo[0].imageView));if(view==p->views.end())return;
     if(s.images.size()>=16)return;
     s.images[w.dstBinding]={{view->first,view->second.gen},w.pImageInfo[0].imageLayout,w.descriptorType};
+}
+void DrawProbe::renderPass(VkRenderPass handle,const VkRenderPassCreateInfo& info){
+    if(!p->disabled.empty())return;
+    if(info.attachmentCount>32 || info.subpassCount>32)throw std::runtime_error("render pass tracking limit");
+    Impl::RenderPass rp{};rp.gen=p->gen();
+    for(uint32_t i=0;i<info.attachmentCount;++i)rp.attachments.push_back(info.pAttachments[i]);
+    for(uint32_t i=0;i<info.subpassCount;++i){const auto& s=info.pSubpasses[i];Impl::Subpass sub;
+        if(s.colorAttachmentCount>16)throw std::runtime_error("color attachment tracking limit");
+        for(uint32_t j=0;j<s.colorAttachmentCount;++j)sub.colors.push_back(s.pColorAttachments[j]);
+        if(s.pDepthStencilAttachment)sub.depth=*s.pDepthStencilAttachment;
+        rp.subpasses.push_back(std::move(sub));
+    }
+    p->renderPasses[h(handle)]=std::move(rp);
+}
+void DrawProbe::renderPass2(VkRenderPass handle,const VkRenderPassCreateInfo2& info){
+    if(!p->disabled.empty())return;
+    if(info.attachmentCount>32 || info.subpassCount>32)throw std::runtime_error("render pass2 tracking limit");
+    Impl::RenderPass rp{};rp.gen=p->gen();
+    for(uint32_t i=0;i<info.attachmentCount;++i){const auto& a=info.pAttachments[i];rp.attachments.push_back({a.flags,a.format,a.samples,a.loadOp,a.storeOp,a.stencilLoadOp,a.stencilStoreOp,a.initialLayout,a.finalLayout});}
+    for(uint32_t i=0;i<info.subpassCount;++i){const auto& s=info.pSubpasses[i];Impl::Subpass sub;
+        if(s.colorAttachmentCount>16)throw std::runtime_error("color attachment tracking limit");
+        for(uint32_t j=0;j<s.colorAttachmentCount;++j)sub.colors.push_back({s.pColorAttachments[j].attachment,s.pColorAttachments[j].layout});
+        if(s.pDepthStencilAttachment)sub.depth={s.pDepthStencilAttachment->attachment,s.pDepthStencilAttachment->layout};
+        rp.subpasses.push_back(std::move(sub));
+    }
+    p->renderPasses[h(handle)]=std::move(rp);
+}
+void DrawProbe::framebuffer(VkFramebuffer handle,const VkFramebufferCreateInfo& info){
+    if(!p->disabled.empty())return;
+    if(info.attachmentCount>32)throw std::runtime_error("framebuffer tracking limit");
+    Impl::Framebuffer fb{p->gen(),bool(info.flags&VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT),{}};
+    if(!fb.imageless)for(uint32_t i=0;i<info.attachmentCount;++i)fb.views.push_back(p->viewRef(info.pAttachments[i]));
+    p->framebuffers[h(handle)]=std::move(fb);
+}
+void DrawProbe::inheritance(VkCommandBuffer cb,const VkCommandBufferBeginInfo& info){
+    auto it=p->commands.find(h(cb));if(it==p->commands.end() || !(info.flags&VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) || !info.pInheritanceInfo)return;
+    const auto& i=*info.pInheritanceInfo;auto& c=it->second;
+    auto rp=p->renderPasses.find(h(i.renderPass));auto fb=p->framebuffers.find(h(i.framebuffer));
+    c.inheritedRenderPass={h(i.renderPass),rp==p->renderPasses.end()?0:rp->second.gen};
+    c.inheritedFramebuffer={h(i.framebuffer),fb==p->framebuffers.end()?0:fb->second.gen};c.inheritedSubpass=i.subpass;
+}
+void DrawProbe::beginPass(VkCommandBuffer cb,const VkRenderPassBeginInfo& info){
+    auto it=p->commands.find(h(cb));if(it==p->commands.end())return;
+    auto pass=std::make_shared<Impl::Pass>();pass->id=p->gen();pass->area=info.renderArea;
+    auto rp=p->renderPasses.find(h(info.renderPass));auto fb=p->framebuffers.find(h(info.framebuffer));
+    pass->renderPass={h(info.renderPass),rp==p->renderPasses.end()?0:rp->second.gen};
+    pass->framebuffer={h(info.framebuffer),fb==p->framebuffers.end()?0:fb->second.gen};
+    if(fb!=p->framebuffers.end()){
+        pass->views=fb->second.views;
+        if(fb->second.imageless){
+            unsigned count=0;
+            for(auto node=static_cast<const VkBaseInStructure*>(info.pNext);node && count++<32;node=node->pNext)
+                if(node->sType==VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO){
+                    auto attachments=reinterpret_cast<const VkRenderPassAttachmentBeginInfo*>(node);
+                    if(attachments->attachmentCount>32)throw std::runtime_error("imageless attachment limit");
+                    for(uint32_t i=0;i<attachments->attachmentCount;++i)pass->views.push_back(p->viewRef(attachments->pAttachments[i]));
+                    break;
+                }
+        }
+    }
+    p->fill(*pass);it->second.pass=std::move(pass);
+}
+void DrawProbe::nextSubpass(VkCommandBuffer cb){
+    auto it=p->commands.find(h(cb));if(it==p->commands.end() || !it->second.pass)return;
+    auto pass=std::make_shared<Impl::Pass>(*it->second.pass);pass->id=p->gen();++pass->subpass;
+    if(pass->dynamic){it->second.pass.reset();return;}p->fill(*pass);it->second.pass=std::move(pass);
+}
+void DrawProbe::endPass(VkCommandBuffer cb){auto it=p->commands.find(h(cb));if(it!=p->commands.end())it->second.pass.reset();}
+void DrawProbe::beginRendering(VkCommandBuffer cb,const VkRenderingInfo& info){
+    auto it=p->commands.find(h(cb));if(it==p->commands.end())return;
+    if(info.colorAttachmentCount>16)throw std::runtime_error("dynamic attachment limit");
+    auto pass=std::make_shared<Impl::Pass>();pass->id=p->gen();pass->area=info.renderArea;pass->dynamic=true;pass->status="tracked dynamic attachment references";
+    auto add=[&](const VkRenderingAttachmentInfo* a,const char* role,uint32_t index){if(a && a->imageView)pass->targets.push_back({p->viewRef(a->imageView),role,index,a->imageLayout,a->loadOp,a->storeOp});};
+    for(uint32_t i=0;i<info.colorAttachmentCount;++i)add(&info.pColorAttachments[i],"color",i);
+    add(info.pDepthAttachment,"depth",0);add(info.pStencilAttachment,"stencil",0);
+    it->second.pass=std::move(pass);
 }
 void DrawProbe::set(VkDescriptorSet s,VkDescriptorPool pool){if(p->disabled.empty())p->sets[h(s)]={p->gen(),h(pool),0,{}};}
 void DrawProbe::write(VkDescriptorSet s){auto it=p->sets.find(h(s));if(it!=p->sets.end()){++it->second.revision;it->second.images.clear();}}
@@ -152,7 +293,7 @@ void DrawProbe::bindPipeline(VkCommandBuffer cb,VkPipelineBindPoint point,VkPipe
 void DrawProbe::invalidateSets(VkCommandBuffer cb){auto it=p->commands.find(h(cb));if(it!=p->commands.end()){it->second.set={};it->second.layout=0;}}
 void DrawProbe::execute(VkCommandBuffer cb,uint32_t count,const VkCommandBuffer* children){
     auto it=p->commands.find(h(cb));if(it==p->commands.end())return;auto& c=it->second;
-    for(uint32_t i=0;i<count;++i){auto child=p->commands.find(h(children[i]));if(child!=p->commands.end())c.children[h(children[i])]=child->second.gen;}
+    for(uint32_t i=0;i<count;++i){auto child=p->commands.find(h(children[i]));if(child!=p->commands.end())c.children[h(children[i])]={child->second.gen,c.pass};}
     if(c.children.size()>256)throw std::runtime_error("draw secondary reference limit");
     // No inherited state is inferred, even if an optional extension allows it.
     c.pipeline={};c.set={};c.layout=0;
@@ -165,10 +306,10 @@ void DrawProbe::draw(VkCommandBuffer cb,const char* kind,bool potentiallyNonempt
     if(set==p->sets.end() || set->second.gen!=c.set.gen){++p->observations[3];return;}
     if(pipeline->second.layout!=c.layout){++p->observations[4];return;}
     ++p->observations[5];
-    Impl::Key key{c.pipeline.gen,c.set.gen,set->second.revision,kind};auto existing=c.draws.find(key);
+    Impl::Key key{c.pipeline.gen,c.set.gen,set->second.revision,kind,c.pass?c.pass->id:0};auto existing=c.draws.find(key);
     if(existing!=c.draws.end()){++existing->second.count;existing->second.last=c.ordinal;return;}
     if(c.draws.size()>=1024 || p->totalDraws>=262144){c.truncated=true;++p->observations[6];return;}
-    c.draws[key]={c.pipeline,c.set,set->second.revision,c.ordinal,c.ordinal,1,kind,indirect};++p->totalDraws;
+    c.draws[key]={c.pipeline,c.set,set->second.revision,c.ordinal,c.ordinal,1,kind,indirect,c.pass};++p->totalDraws;
 }
 std::map<uint64_t,Json> DrawProbe::links(uint32_t count,const VkCommandBuffer* commands){
     std::map<uint64_t,Json> result;std::set<uint64_t> visited;

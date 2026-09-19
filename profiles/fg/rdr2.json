@@ -4,6 +4,6 @@
   "enabled": false,
   "executable": "RDR2.exe",
   "optical_flow_fallback": true,
-  "status": "camera_candidates_captured_unverified",
-  "notes": "CPU samples at set 0 bindings 29/31 contain candidate rotation/projection data that respond to manual camera turns. Shader consumption, frame identity, translation conventions, depth and motion are not verified. Keep disabled until those are established; do not use guessed selectors or absolute process addresses."
+  "status": "camera_draw_linked_unverified",
+  "notes": "Camera candidates at set 0 bindings 29/31 now have recorded draw links and static vertex-shader matrix-chain evidence. GPU frame identity, translation conventions, depth and motion image contents remain unverified. Keep disabled until those are established; research evidence is not a runnable profile."
 }

@@ -438,6 +438,48 @@ tests cover descriptor revisions, handle reuse, image/view lifetime checks,
 layout mismatch, dynamic offsets, zero draws, secondary resets and unsupported
 mode. Diagnostic I/O failure must still forward the real graphics draw normally.
 
-The game still needs this new draw-associated capture. Camera/depth/motion frame
-identity and image preservation, NGX game integration and FG presentation remain
-unimplemented; the RDR2 FG profile remains disabled.
+The first game draw-associated window returned 234 samples, all linked to
+recorded draws and successful CPU submission results. The native mode was
+available on the game's presenting device; unsupported extensions disabled it
+on auxiliary devices as intended. Camera/depth/motion frame identity and image
+preservation, NGX game integration and FG presentation remain unimplemented;
+the RDR2 FG profile remains disabled.
+
+Static analysis of the observed vertex shader
+`2004b4b6a04e99218882922aa276f7c8fa72c4e12c66bbf4f33fd9eca02d226f`
+confirms that matrices at byte offsets 128, 64 and 0 multiply the input position
+in that left-to-right order before BuiltIn Position. A second chain at 400,
+336 and 272 contributes to output location 8, with additional scaling using
+other resources. This is static dataflow evidence, not established temporal
+pairing or motion-vector encoding. The paired fragment shader did not fit in
+the initial 128 MiB dump. The diagnostic Steam wrapper now defaults to a bounded
+512 MiB shader budget; explicit `DLSSFG_SHADER_LIMIT_MIB` overrides still win.
+Research-only JSON evidence lives in `profiles/research/`; the profile loader
+does not use it, and it contains neither game shader binaries nor process addresses.
+
+### Render targets at recorded draws
+
+The next layer records color/depth attachment references for legacy render
+passes, RenderPass2 and dynamic rendering. It tracks framebuffer/view/image
+generations, imageless attachment selection, subpass transitions and the scope
+active at a draw. Secondary legacy render passes resolve against the primary's
+scope recorded at execution, requiring exact render-pass lifetime/subpass and
+matching framebuffer if inheritance specified one. Compatible-but-distinct
+render passes and dynamic-rendering inheritance are conservatively unresolved.
+
+Each draw link now includes `render_targets`: render area, subpass, declaration
+layouts/load/store operations, image/view generations, formats, extents, usage
+and subresource ranges. Destroyed/reused resources are marked stale or invalid.
+These are references, **not pixel captures, current image layouts, completed GPU
+writes or a resource history**. Resolve/input/preserve attachments are omitted.
+For combined depth/stencil attachments, load/store describes the depth aspect.
+Dynamic color attachment indices do not establish shader output locations under
+optional location remapping. Repeated secondary executions remain bounded
+examples rather than a complete ordered trace.
+
+State tests cover subpass changes, scope termination, imageless/inherited/dynamic
+targets and framebuffer/view reuse. Real GPU tests exercise actual RG16F color
+and D32 depth attachments in primary/secondary commands with both RenderPass and
+RenderPass2, inside Steam Runtime with Vulkan Validation Layers. Dynamic target
+resolution currently has state-test coverage only. Gameplay target selection,
+motion encoding and depth readback are still required.
