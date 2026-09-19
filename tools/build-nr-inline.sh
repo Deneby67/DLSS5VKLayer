@@ -39,7 +39,7 @@ for block in re.findall(r'Export \{(.*?)\}',(p/'vulkan-exports.txt').read_text()
     lines.append(f'{name}={target} @{ordinal}')
 (p/'vulkan.def').write_text('\n'.join(lines)+'\n')
 PY
-"$llvm/clang++" "${flags[@]}" -shared ngx_capture/nr_vulkan.cpp core/ngx_snippet.cpp core/guard.cpp "$out/vulkan.def" -lwinpthread -o "$out/vulkan-1.dll"
+"$llvm/clang++" "${flags[@]}" -shared ngx_capture/nr_vulkan.cpp core/ngx_snippet.cpp core/guard.cpp "$out/vulkan.def" -luser32 -lwinpthread -o "$out/vulkan-1.dll"
 "$llvm/clang++" "${flags[@]}" test_layer/nr_inline_probe.cpp -lwinpthread -o "$out/nr_inline_probe.exe"
 
 "$llvm/clang++" "${flags[@]}" test_layer/nr_bootstrap_wsi.cpp -luser32 -lwinpthread -o "$out/nr_bootstrap_wsi.exe"

@@ -21,12 +21,10 @@ PFN_vkGetInstanceProcAddr realGipa{};
 PFN_vkGetDeviceProcAddr realGdpa{};
 INIT_ONCE once=INIT_ONCE_STATIC_INIT;
 BOOL CALLBACK Resolve(PINIT_ONCE,void*,void**) {
-    // Wine's builtin vulkan-1 initializes user32 before using winevulkan.
-    // Do the same outside our loader-lock entry point.
+    // user32 is a static dependency and is initialized in DllMain, matching
+    // Wine's builtin vulkan-1. Do not defer display initialization to the first
+    // Vulkan call, which can originate on a different application thread.
     BootstrapTrace trace("resolve",bootstrap);
-    auto user=LoadLibraryW(L"user32.dll");
-    auto dpi=user?(UINT(WINAPI*)())GetProcAddress(user,"GetDpiForSystem"):nullptr;
-    if(dpi) dpi();
     auto wine=LoadLibraryW(L"winevulkan.dll");
     if(!wine) return FALSE;
     realGipa=(PFN_vkGetInstanceProcAddr)GetProcAddress(wine,"vkGetInstanceProcAddr");
@@ -343,6 +341,7 @@ extern "C" PFN_vkVoidFunction VKAPI_CALL NrGdpa(VkDevice d,const char* n) {retur
 BOOL WINAPI DllMain(HINSTANCE self,DWORD why,void*) {
     if(why==DLL_PROCESS_ATTACH) {
         selfModule=self; DisableThreadLibraryCalls(self);
+        GetDpiForSystem(); // Same process-attach dependency as builtin vulkan-1.
         wchar_t path[32768]{},flag[8]{}; auto count=GetModuleFileNameW(nullptr,path,32768);
         auto base=wcsrchr(path,L'\\'); base=base?base+1:path;
         enabled=count && count<32768 && !_wcsicmp(base,L"RDR2.exe") &&

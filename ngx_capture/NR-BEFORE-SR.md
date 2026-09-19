@@ -142,10 +142,13 @@ They are not selected by the diagnostic installer. The old inline installation
 block remains in place. Forward-only startup success will not prove the full
 NR path works, nor identify BDA or tracking as the cause without another test.
 
-A direct exported `vkCreateInstance` previously bypassed the shim's delayed
-user32 initialization. It now resolves the Wine context first, matching the
-initialization dependency of Wine's builtin Vulkan DLL. This is a concrete
-bootstrap coverage gap, **not a confirmed explanation of the RDR2 hang**.
+A direct exported `vkCreateInstance` originally bypassed the shim's delayed
+user32 initialization. The first diagnostic routed it through resolution, but
+that still initialized user32 on the first Vulkan caller's thread. The current
+candidate imports USER32.dll/GetDpiForSystem statically and calls it on process
+attach, matching Wine's builtin vulkan-1 DllMain. Resolution no longer loads or
+initializes user32 lazily. This closes an initialization-order difference,
+**not a confirmed explanation of the RDR2 hang**.
 The new `bootstrap-wsi` fixture creates an actual Win32 window using that direct
 export before GIPA, creates a swapchain, and presents three frames. Together
 with the existing GIPA-based HDR fixture it covers both entry routes.
@@ -184,3 +187,18 @@ its trigger or a causal link to either layer. Private stacks remain under build/
 The diagnostic launch now disables presentation NR as well (`VKLayer_DLSS5=0`,
 `DLSSNR_ENABLE=0`) to isolate that path on the next user-controlled restart.
 The previous working launch can still be restored exactly using its backup.
+
+### Live game capture after disabling presentation NR
+
+RDR2 reached Vulkan device/swapchain creation and presented a frame with forward
+mode and both NR paths disabled. A later present returned
+`VK_ERROR_OUT_OF_DATE_KHR`; all captured Vulkan calls had returned. That return
+code alone does not explain the hang. Three Linux stack snapshots were saved,
+and read-only inspection of the saved Windows syscall contexts and PE unwind
+metadata located the main thread waiting in RtlEnterCriticalSection on a game
+lock. Its owner was another game thread waiting in WaitForSingleObject. The
+Wine display_lock was free. Thus the earlier steam.exe display self-deadlock did
+not recur, and this game-level wait must not be conflated with it. The startup
+cause remains unresolved; NR and BDA augmentation were not active. The next
+candidate changes only user32 initialization order, with the inline NR installer
+still blocked. Raw game addresses/stacks stay private in build/.
