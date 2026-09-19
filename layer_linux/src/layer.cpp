@@ -948,7 +948,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL Hook_CreateDevice(
 
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     if(ic && ic->vkGetPhysicalDeviceMemoryProperties) ic->vkGetPhysicalDeviceMemoryProperties(physicalDevice,&memoryProperties);
-    dlssfg::discovery::Register(*pDevice,next_dpa,memoryProperties);
+    dlssfg::discovery::Register(*pDevice,next_dpa,memoryProperties,*pCreateInfo);
     std::lock_guard<std::mutex> lk(g_stateMutex);
     g_devices[*pDevice] = dc;
     Log("[layer] vkCreateDevice -> %p on %s (inert=%d enabled=%d)", (void*)*pDevice, deviceName,

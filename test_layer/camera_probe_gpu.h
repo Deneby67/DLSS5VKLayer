@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <chrono>
 #include <unistd.h>
+#include "camera_draw_spv.h"
 // Included after the test's OK macro. No rendering is needed to check byte-accurate
 // host snapshots; the diagnostic correctly labels a bound set as unproven use.
 static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool capture=true) {
@@ -24,6 +25,25 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
     VkDescriptorSetLayout layout{};OK(vkCreateDescriptorSetLayout(d,&li,nullptr,&layout));
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};pli.setLayoutCount=1;pli.pSetLayouts=&layout;
     VkPipelineLayout pl{};OK(vkCreatePipelineLayout(d,&pli,nullptr,&pl));
+    const bool drawAssociations=std::getenv("DLSSFG_TEST_DRAW_ASSOCIATIONS")!=nullptr;
+    VkPipeline pipeline{};VkRenderPass renderPass{};VkFramebuffer framebuffer{};
+    if(drawAssociations){
+        VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};sm.codeSize=sizeof(cameraDrawSpirv);sm.pCode=cameraDrawSpirv;
+        VkShaderModule shader{};OK(vkCreateShaderModule(d,&sm,nullptr,&shader));
+        VkSubpassDescription sub{};sub.pipelineBindPoint=VK_PIPELINE_BIND_POINT_GRAPHICS;
+        VkRenderPassCreateInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};rp.subpassCount=1;rp.pSubpasses=&sub;
+        OK(vkCreateRenderPass(d,&rp,nullptr,&renderPass));
+        VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};fb.renderPass=renderPass;fb.width=fb.height=fb.layers=1;
+        OK(vkCreateFramebuffer(d,&fb,nullptr,&framebuffer));
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};stage.stage=VK_SHADER_STAGE_VERTEX_BIT;stage.module=shader;stage.pName="main";
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};rs.rasterizerDiscardEnable=VK_TRUE;rs.lineWidth=1;
+        VkGraphicsPipelineCreateInfo pi{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};pi.stageCount=1;pi.pStages=&stage;pi.layout=pl;pi.renderPass=renderPass;
+        pi.pVertexInputState=&vi;pi.pInputAssemblyState=&ia;pi.pRasterizationState=&rs;
+        OK(vkCreateGraphicsPipelines(d,VK_NULL_HANDLE,1,&pi,nullptr,&pipeline));
+        vkDestroyShaderModule(d,shader,nullptr); // Pipeline metadata must outlive its shader module.
+    }
     VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,1};VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pi.maxSets=1;pi.poolSizeCount=1;pi.pPoolSizes=&ps;
     VkDescriptorPool pool{};OK(vkCreateDescriptorPool(d,&pi,nullptr,&pool));
     VkDescriptorSetAllocateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};si.descriptorPool=pool;si.descriptorSetCount=1;si.pSetLayouts=&layout;
@@ -37,12 +57,21 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
     VkQueue queue{};vkGetDeviceQueue(d,family,0,&queue);
     auto record=[&](bool withSet,bool useSecondary) {
         OK(vkResetCommandPool(d,commandPool,0));
-        VkCommandBufferInheritanceInfo inherit{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+        VkCommandBufferInheritanceInfo inherit{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};inherit.renderPass=renderPass;inherit.framebuffer=framebuffer;
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};begin.pInheritanceInfo=&inherit;
-        if(useSecondary){OK(vkBeginCommandBuffer(secondary,&begin));if(withSet)vkCmdBindDescriptorSets(secondary,VK_PIPELINE_BIND_POINT_GRAPHICS,pl,0,1,&set,0,nullptr);OK(vkEndCommandBuffer(secondary));}
+        auto commands=[&](VkCommandBuffer cb){
+            if(withSet)vkCmdBindDescriptorSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,pl,0,1,&set,0,nullptr);
+            if(drawAssociations && withSet){vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);vkCmdDraw(cb,3,1,0,0);}
+        };
+        if(useSecondary){if(drawAssociations)begin.flags=VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+            OK(vkBeginCommandBuffer(secondary,&begin));commands(secondary);OK(vkEndCommandBuffer(secondary));}
+        begin.flags=0;
         OK(vkBeginCommandBuffer(primary,&begin));
+        VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};rp.renderPass=renderPass;rp.framebuffer=framebuffer;rp.renderArea.extent={1,1};
+        if(drawAssociations)vkCmdBeginRenderPass(primary,&rp,useSecondary?VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS:VK_SUBPASS_CONTENTS_INLINE);
         if(useSecondary)vkCmdExecuteCommands(primary,1,&secondary);
-        else if(withSet)vkCmdBindDescriptorSets(primary,VK_PIPELINE_BIND_POINT_GRAPHICS,pl,0,1,&set,0,nullptr);
+        else commands(primary);
+        if(drawAssociations)vkCmdEndRenderPass(primary);
         OK(vkEndCommandBuffer(primary));
     };
     bool useSubmit2=false;
@@ -65,7 +94,7 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
     for(auto& dir:std::filesystem::directory_iterator(root))if(dir.path().filename().string().find("rdr2-"+std::to_string(getpid())+"-")==0)session=dir.path();
     if(session.empty())std::exit(12);
     for(auto& f:std::filesystem::directory_iterator(session/"camera"))if(f.path().extension()==".jsonl")std::exit(13);
-    {std::ofstream request(session/"camera/request.json");request<<"{\"id\":1,\"device\":1,\"duration_ms\":1200,\"max_samples\":32}";}
+    {std::ofstream request(session/"camera/request.json");request<<"{\"id\":1,\"device\":1,\"duration_ms\":1200,\"max_samples\":32,\"require_draw\":"<<(drawAssociations?"true":"false")<<"}";}
     }
     fill(1);submit();
     fill(2);record(true,true);useSubmit2=true;submit();useSubmit2=false; // Secondary command traversal.
@@ -75,6 +104,9 @@ static void CameraGpuTest(VkPhysicalDevice gpu,VkDevice d,uint32_t family,bool c
     record(true,false);submit();
     std::this_thread::sleep_for(std::chrono::milliseconds(850));submit(); // Close timed request.
     vkDestroyCommandPool(d,commandPool,nullptr);vkDestroyDescriptorPool(d,pool,nullptr);
+    if(pipeline)vkDestroyPipeline(d,pipeline,nullptr);
+    if(framebuffer)vkDestroyFramebuffer(d,framebuffer,nullptr);
+    if(renderPass)vkDestroyRenderPass(d,renderPass,nullptr);
     vkDestroyPipelineLayout(d,pl,nullptr);vkDestroyDescriptorSetLayout(d,layout,nullptr);
     vkUnmapMemory(d,memory);vkDestroyBuffer(d,buffer,nullptr);vkFreeMemory(d,memory,nullptr);
     puts("PASS: requested camera snapshots, binding/map/descriptor offsets, secondary command, unmap and pool reset");

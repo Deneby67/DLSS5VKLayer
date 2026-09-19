@@ -381,3 +381,63 @@ relations; it never enables a profile. RDR2's profile remains disabled with
 status `camera_candidates_captured_unverified`. Verified shader/draw association,
 camera translation and temporal pairing, plus depth and motion image captures,
 remain necessary before connecting the game to FG.
+
+### Requested draw associations
+
+The next diagnostic layer keeps shader hashes, pipeline/layout lifetimes and
+graphics command state independently of the inventory log budget. A camera
+window can now require a recorded draw association:
+
+```sh
+python3 tools/request-camera.py /private/discovery/session --require-draw \
+  --duration-ms 5000 --samples 256
+```
+
+This requires a fresh launch with the updated library. The support file reports
+whether the mode is available; an older layer is rejected by the request tool.
+Each sample retains `draw_links`, also passed through by `analyze-camera.py`.
+Links include the pipeline's stage hashes/entry points, whether specialization
+was supplied, command/pipeline/set lifetime generations, descriptor revision,
+draw kind and bounded ordinal examples. No raw game shaders are published.
+Same-set image descriptor examples include view/image generations, format,
+extent, usage and subresource range. They are **not** GPU image contents or a
+claim that a particular shader actually sampled that binding.
+
+The tracker distinguishes binding from drawing. It records legacy direct,
+indexed and indirect draw calls; indirect counts remain unknown. Zero direct
+draws are excluded. Legacy and maintenance6 descriptor binds are observed.
+It requires exact pipeline-layout lifetime identity, conservatively dropping
+compatible-but-distinct layouts and dynamic-offset binds. Descriptor writes,
+copies or templates after recording invalidate older associations by revision.
+Push-descriptor calls clear the tracked set binding. Secondary commands are
+traversed only when referenced by a submitted primary, with generation checks;
+no graphics binding state is assumed after executing secondary commands.
+
+These conservative choices follow Vulkan's
+[descriptor layout compatibility rules](https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html)
+and [secondary command buffer state rules](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdExecuteCommands.html).
+Draw associations are disabled when shader objects, descriptor buffers,
+device-generated commands or command-buffer inheritance extensions are enabled.
+Other unobserved draw forms are omitted. Graphics pipeline libraries without
+resolvable shader stages and inline modules are unresolved. This is a diagnostic
+subset, not a complete Vulkan execution trace.
+
+The tracker retains at most 1,024 distinct association examples per command
+buffer and 262,144 globally, 4 link examples per set per sampled submission, and
+16 single-element image bindings per set. Array/spill descriptors and other set
+indices are not reconstructed. Repeated secondary executions and GPU ordering
+are not reconstructed. The request end record includes lifetime CPU draw
+counters to distinguish missing pipelines/sets from layout mismatches. Output
+byte-limit exhaustion ends the request cleanly; it does not disable the probe.
+
+Validation uses an owned vertex shader (`test_layer/camera_draw.vert`) that reads
+binding 29, actual graphics draws in primary/secondary commands, device-local
+coherent memory and Vulkan validation. It checks the exact expected shader hash
+even after shader-module destruction and after the metadata log fills. State
+tests cover descriptor revisions, handle reuse, image/view lifetime checks,
+layout mismatch, dynamic offsets, zero draws, secondary resets and unsupported
+mode. Diagnostic I/O failure must still forward the real graphics draw normally.
+
+The game still needs this new draw-associated capture. Camera/depth/motion frame
+identity and image preservation, NGX game integration and FG presentation remain
+unimplemented; the RDR2 FG profile remains disabled.

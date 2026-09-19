@@ -43,12 +43,16 @@ struct CameraProbe::Impl {
     std::map<std::string,uint64_t> misses;
     CpuSnapshotReader reader;
     CpuSnapshotReader::Result lastRead;
+    DrawProbe draws;
+    bool requireDraw=false;
     static constexpr size_t SliceBytes=464, ObjectLimit=500000, CommandRefLimit=8192;
-    Impl(const std::filesystem::path& dir,uint64_t id,const VkPhysicalDeviceMemoryProperties& props):properties(props),directory(dir/"camera"),deviceId(id) {
+    Impl(const std::filesystem::path& dir,uint64_t id,const VkPhysicalDeviceMemoryProperties& props,const std::string& drawDisabled):properties(props),directory(dir/"camera"),deviceId(id) {
+        if(!drawDisabled.empty())draws.disable(drawDisabled);
         std::filesystem::create_directory(directory); chmod(directory.c_str(),0700);
         auto path=directory/("support-"+std::to_string(deviceId)+".json");
         {std::ofstream f(path);check(bool(f),"camera capability file unavailable");
-         f<<Json({{"schema",1},{"device",deviceId},{"pid",getpid()},{"mode","CPU pre-submit candidates"}}).dump()<<"\n";check(bool(f),"camera capability write failed");}
+         f<<Json({{"schema",1},{"device",deviceId},{"pid",getpid()},{"mode","CPU pre-submit candidates"},
+             {"draw_associations_supported",drawDisabled.empty()},{"draw_associations",draws.status()}}).dump()<<"\n";check(bool(f),"camera capability write failed");}
         chmod(path.c_str(),0600);
     }
     ~Impl() { if(output>=0) close(output); }
@@ -59,6 +63,7 @@ struct CameraProbe::Impl {
         if(output<0)return;
         j["device"]=deviceId; j["request"]=lastRequest; j["present_marker"]=presents;
         auto text=j.dump(-1,' ',false,Json::error_handler_t::replace)+"\n";
+        if(j.value("event",std::string{})!="end" && bytes+text.size()>(8ull<<20)-4096){finish("output byte limit");return;}
         check(bytes+text.size()<=8ull<<20,"camera output limit");
         size_t done=0;
         while(done<text.size()) { auto n=write(output,text.data()+done,text.size()-done); if(n<0&&errno==EINTR)continue; check(n>0,"camera write failed");done+=size_t(n); }
@@ -66,7 +71,7 @@ struct CameraProbe::Impl {
     }
     void finish(const char* why) {
         if(output<0)return;
-        emit({{"event","end"},{"reason",why},{"samples",sampleCount},{"misses",misses}});
+        emit({{"event","end"},{"reason",why},{"samples",sampleCount},{"misses",misses},{"draw_observations_lifetime",draws.diagnostics()}});
         close(output); output=-1;
     }
     void poll() {
@@ -86,12 +91,15 @@ struct CameraProbe::Impl {
         if(!j.contains("duration_ms") || !j["duration_ms"].is_number_unsigned() || !j.contains("max_samples") || !j["max_samples"].is_number_unsigned())return;
         auto duration=j["duration_ms"].get<uint64_t>(); auto limit=j["max_samples"].get<uint64_t>();
         if(duration<100 || duration>30000 || limit<1 || limit>1024)return;
+        if(j.contains("require_draw") && !j["require_draw"].is_boolean())return;
         finish("superseded");
+        requireDraw=j.value("require_draw",false);
         lastRequest=id; sampleLimit=unsigned(limit); sampleCount=bytes=0; misses.clear();
         output=open((directory/("samples-"+std::to_string(deviceId)+"-"+std::to_string(id)+".jsonl")).c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
         check(output>=0,"camera output unavailable"); deadline=now+std::chrono::milliseconds(duration); nextSample=now;
         emit({{"event","begin"},{"schema",1},{"cpu_snapshots_only",true},{"gpu_completion_verified",false},
             {"bindings",{29,31}},{"slice_bytes",SliceBytes},{"max_samples",sampleLimit},
+            {"require_draw",requireDraw},{"draw_associations",draws.status()},
             {"limitations",{"bound set is not proof of shader consumption","no GPU-write ownership tracking","no camera semantics inferred","dynamic uniform descriptors and update templates unsupported"}}});
     }
     void collect(uint64_t cb,uint64_t expected,std::set<uint64_t>& visited,std::set<SetRef>& refs) {
@@ -124,8 +132,9 @@ struct CameraProbe::Impl {
         return true;
     }
 };
-CameraProbe::CameraProbe(const std::filesystem::path& d,uint64_t id,const VkPhysicalDeviceMemoryProperties& m):p(new Impl(d,id,m)) {}
+CameraProbe::CameraProbe(const std::filesystem::path& d,uint64_t id,const VkPhysicalDeviceMemoryProperties& m,const std::string& reason):p(new Impl(d,id,m,reason)) {}
 CameraProbe::~CameraProbe()=default;
+DrawProbe& CameraProbe::draws(){return p->draws;}
 void CameraProbe::buffer(VkBuffer b,VkDeviceSize size,VkBufferCreateFlags flags) { p->buffers[h(b)]={p->gen(),size,bool(flags&VK_BUFFER_CREATE_SPARSE_BINDING_BIT)}; }
 void CameraProbe::destroyBuffer(VkBuffer b) { p->buffers.erase(h(b)); }
 void CameraProbe::allocate(VkDeviceMemory m,VkDeviceSize size,uint32_t type) { if(type>=p->properties.memoryTypeCount)return; p->memories[h(m)]={p->gen(),size,p->properties.memoryTypes[type].propertyFlags}; }
@@ -141,13 +150,13 @@ void CameraProbe::bind(VkBuffer b,VkDeviceMemory m,VkDeviceSize offset) {
     auto mi=p->memories.find(h(m));if(mi==p->memories.end())return;
     bi->second.memory=h(m);bi->second.memoryGen=mi->second.gen;bi->second.offset=offset;
 }
-void CameraProbe::set(VkDescriptorSet s,VkDescriptorPool pool) { p->sets[h(s)]={p->gen(),h(pool),{}}; }
-void CameraProbe::freeSet(VkDescriptorSet s) {p->sets.erase(h(s));}
-void CameraProbe::pool(VkDescriptorPool pool) {for(auto it=p->sets.begin();it!=p->sets.end();) {if(it->second.pool==h(pool))it=p->sets.erase(it);else ++it;}}
-void CameraProbe::invalidate(VkDescriptorSet s) {auto it=p->sets.find(h(s));if(it!=p->sets.end())it->second.slices.clear();}
+void CameraProbe::set(VkDescriptorSet s,VkDescriptorPool pool) { p->draws.set(s,pool);p->sets[h(s)]={p->gen(),h(pool),{}}; }
+void CameraProbe::freeSet(VkDescriptorSet s) {p->draws.freeSet(s);p->sets.erase(h(s));}
+void CameraProbe::pool(VkDescriptorPool pool) {p->draws.pool(pool);for(auto it=p->sets.begin();it!=p->sets.end();) {if(it->second.pool==h(pool))it=p->sets.erase(it);else ++it;}}
+void CameraProbe::invalidate(VkDescriptorSet s) {p->draws.write(s);auto it=p->sets.find(h(s));if(it!=p->sets.end())it->second.slices.clear();}
 void CameraProbe::updates(uint32_t count,const VkWriteDescriptorSet* writes,uint32_t copies,const VkCopyDescriptorSet* copy) {
     for(uint32_t i=0;i<count;++i) {
-        const auto& w=writes[i];auto it=p->sets.find(h(w.dstSet));if(it==p->sets.end())continue;
+        const auto& w=writes[i];p->draws.descriptor(w);auto it=p->sets.find(h(w.dstSet));if(it==p->sets.end())continue;
         if(w.descriptorCount!=1) {it->second.slices.clear();continue;} // Spill/array writes are deliberately unresolved.
         if(w.dstBinding!=29 && w.dstBinding!=31)continue;
         it->second.slices.erase(w.dstBinding);
@@ -158,10 +167,11 @@ void CameraProbe::updates(uint32_t count,const VkWriteDescriptorSet* writes,uint
     }
     for(uint32_t i=0;i<copies;++i)invalidate(copy[i].dstSet);
 }
-void CameraProbe::command(VkCommandBuffer cb,VkCommandPool pool) {p->commands[h(cb)]={p->gen(),h(pool),{}, {}};}
-void CameraProbe::freeCommand(VkCommandBuffer cb) {auto it=p->commands.find(h(cb));if(it!=p->commands.end()){p->totalRefs-=it->second.sets.size();p->commands.erase(it);}}
-void CameraProbe::begin(VkCommandBuffer cb) {auto it=p->commands.find(h(cb));if(it!=p->commands.end()){p->totalRefs-=it->second.sets.size();it->second.gen=p->gen();it->second.sets.clear();it->second.children.clear();}}
+void CameraProbe::command(VkCommandBuffer cb,VkCommandPool pool) {p->draws.command(cb,pool);p->commands[h(cb)]={p->gen(),h(pool),{}, {}};}
+void CameraProbe::freeCommand(VkCommandBuffer cb) {p->draws.freeCommand(cb);auto it=p->commands.find(h(cb));if(it!=p->commands.end()){p->totalRefs-=it->second.sets.size();p->commands.erase(it);}}
+void CameraProbe::begin(VkCommandBuffer cb) {p->draws.reset(cb);auto it=p->commands.find(h(cb));if(it!=p->commands.end()){p->totalRefs-=it->second.sets.size();it->second.gen=p->gen();it->second.sets.clear();it->second.children.clear();}}
 void CameraProbe::commandPool(VkCommandPool pool,bool destroy) {
+    p->draws.commandPool(pool,destroy);
     for(auto it=p->commands.begin();it!=p->commands.end();) {
         if(it->second.pool!=h(pool)){++it;continue;}
         p->totalRefs-=it->second.sets.size();
@@ -178,6 +188,7 @@ void CameraProbe::bindSets(VkCommandBuffer cb,VkPipelineBindPoint point,uint32_t
         check(it->second.sets.size()<=Impl::CommandRefLimit,"camera command set limit");}
 }
 void CameraProbe::execute(VkCommandBuffer cb,uint32_t count,const VkCommandBuffer* children) {
+    p->draws.execute(cb,count,children);
     auto it=p->commands.find(h(cb));if(it==p->commands.end())return;
     for(uint32_t i=0;i<count;++i){auto c=p->commands.find(h(children[i]));if(c!=p->commands.end())it->second.children[h(children[i])]=c->second.gen;}
     check(it->second.children.size()<=256,"camera secondary command limit");
@@ -188,10 +199,13 @@ uint64_t CameraProbe::submit(VkQueue queue,uint32_t count,const VkCommandBuffer*
     ++p->submissions;p->poll();auto now=Clock::now();if(p->output<0 || now<p->nextSample)return 0;
     std::set<uint64_t> visited;std::set<Impl::SetRef> refs;
     for(uint32_t i=0;i<count;++i)p->collect(h(commands[i]),0,visited,refs);
+    auto drawLinks=p->draws.links(count,commands);
     unsigned recorded=0,attempted=0;std::set<std::array<uint8_t,Impl::SliceBytes>> unique;
     for(const auto& ref:refs) {
         if(ref.index!=0)continue;
         auto it=p->sets.find(ref.handle);if(it==p->sets.end() || it->second.gen!=ref.gen){++p->misses["stale descriptor set"];continue;}
+        auto links=drawLinks.find(ref.handle);
+        if(p->requireDraw && links==drawLinks.end()){++p->misses["no supported recorded draw association"];continue;}
         if(it->second.slices.empty())++p->misses["bound set has no supported 464-byte slice"];
         for(auto kv:it->second.slices) {
             if(recorded>=8 || attempted>=128 || p->sampleCount>=p->sampleLimit)break;
@@ -201,15 +215,18 @@ uint64_t CameraProbe::submit(VkQueue queue,uint32_t count,const VkCommandBuffer*
             if(!unique.insert(data).second)continue;
             std::string hex;hex.reserve(2*data.size());for(auto b:data){hex+="0123456789abcdef"[b>>4];hex+="0123456789abcdef"[b&15];}
             p->emit({{"event","cpu_snapshot_before_submit"},{"submission",p->submissions},{"queue",h(queue)},
-                {"sample",++p->sampleCount},{"buffer",kv.second.buffer},{"buffer_generation",kv.second.bufferGen},
+                {"sample",p->sampleCount+1},{"buffer",kv.second.buffer},{"buffer_generation",kv.second.bufferGen},
                 {"offset",kv.second.offset},{"set",ref.handle},{"binding",kv.first},{"descriptor_range",kv.second.range},
                 {"bytes_hex",hex},{"camera_verified",false},{"gpu_completion_verified",false},
                 {"read_method",p->lastRead.usedPipe?"pipe_copy_from_user":"process_vm_readv"},
                 {"vm_read_errno",p->lastRead.vmError},
+                {"draw_links",links==drawLinks.end()?Json::array():links->second},
                 {"monotonic_ns",std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count()}});
+            if(p->output<0)break;
+            ++p->sampleCount;
             ++recorded;
         }
-        if(recorded>=8 || attempted>=128 || p->sampleCount>=p->sampleLimit)break;
+        if(p->output<0 || recorded>=8 || attempted>=128 || p->sampleCount>=p->sampleLimit)break;
     }
     if(refs.empty())++p->misses["no tracked bound sets in sampled submission"];
     if(attempted)p->nextSample=now+std::chrono::milliseconds(100);

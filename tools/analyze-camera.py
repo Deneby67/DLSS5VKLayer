@@ -34,9 +34,11 @@ def analyze(path):
                                   'determinant':determinant(rows) if finite else None}
         decoded.append({'sample':s['sample'],'binding':s['binding'],'buffer_generation':s['buffer_generation'],
                         'offset':s['offset'],'submission':s['submission'],'submission_result':results.get(s['submission']),
+                        'read_method':s.get('read_method','unknown'),'draw_links':s.get('draw_links',[]),
                         'present_marker':s['present_marker'],'matrices':matrices})
     return {'schema':1,'camera_verified':False,'gpu_completion_verified':False,'matrix_order':'column-major, assumed from prior SPIR-V',
             'samples':decoded,'successful_submit_samples':sum(s['submission_result']==0 for s in decoded),
+            'draw_associated_submit_samples':sum(s['submission_result']==0 and bool(s['draw_links']) for s in decoded),
             'complete':end is not None and not partial,'end':end,
             'limitations':['A successful queue submission does not prove the shader consumed this slice',
                            'GPU writes and concurrent host writes are not tracked; CPU observations can be stale or torn',

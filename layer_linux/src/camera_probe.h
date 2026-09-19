@@ -3,12 +3,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include "draw_probe.h"
 namespace dlssfg {
 // CPU-side observations only. Never maps new memory or changes GPU synchronization.
 // All methods are called under the owning discovery session mutex.
 class CameraProbe {
 public:
-    CameraProbe(const std::filesystem::path&,uint64_t,const VkPhysicalDeviceMemoryProperties&);
+    CameraProbe(const std::filesystem::path&,uint64_t,const VkPhysicalDeviceMemoryProperties&,const std::string& drawDisabledReason={});
     ~CameraProbe();
     void buffer(VkBuffer,VkDeviceSize,VkBufferCreateFlags);
     void destroyBuffer(VkBuffer);
@@ -32,6 +33,7 @@ public:
     bool wantsSubmit();
     uint64_t submit(VkQueue,uint32_t,const VkCommandBuffer*);
     void result(uint64_t,VkResult);
+    DrawProbe& draws();
 private:
     struct Impl;
     std::unique_ptr<Impl> p;

@@ -220,7 +220,7 @@ static Json Ref(Context& c,VkObjectType type,uint64_t handle) {
  X(vkAllocateDescriptorSets) X(vkFreeDescriptorSets) X(vkUpdateDescriptorSets) \
  X(vkCreateRenderPass) X(vkDestroyRenderPass) X(vkCreateFramebuffer) X(vkDestroyFramebuffer)
 
-void Register(VkDevice device,PFN_vkGetDeviceProcAddr next,const VkPhysicalDeviceMemoryProperties& memory) noexcept {
+void Register(VkDevice device,PFN_vkGetDeviceProcAddr next,const VkPhysicalDeviceMemoryProperties& memory,const VkDeviceCreateInfo& info) noexcept {
     if (!Enabled()) return;
     std::lock_guard<std::mutex> lock(registryMutex);
     if (startupFailed) return;
@@ -236,10 +236,22 @@ void Register(VkDevice device,PFN_vkGetDeviceProcAddr next,const VkPhysicalDevic
             "vkBindBufferMemory2","vkBindBufferMemory2KHR","vkMapMemory2","vkMapMemory2KHR","vkUnmapMemory2","vkUnmapMemory2KHR",
             "vkUpdateDescriptorSetWithTemplate","vkUpdateDescriptorSetWithTemplateKHR"})
             if(auto fn=next(device,name))c->functions[name]=fn;
+        for(const char* name:{"vkCmdBindPipeline","vkCmdDraw","vkCmdDrawIndexed","vkCmdDrawIndirect","vkCmdDrawIndexedIndirect",
+            "vkCmdDrawIndirectCount","vkCmdDrawIndirectCountKHR","vkCmdDrawIndirectCountAMD",
+            "vkCmdDrawIndexedIndirectCount","vkCmdDrawIndexedIndirectCountKHR","vkCmdDrawIndexedIndirectCountAMD",
+            "vkCmdBindDescriptorSets2","vkCmdBindDescriptorSets2KHR","vkCmdPushDescriptorSet","vkCmdPushDescriptorSetKHR",
+            "vkCmdPushDescriptorSetWithTemplate","vkCmdPushDescriptorSetWithTemplateKHR","vkCmdPushDescriptorSet2","vkCmdPushDescriptorSet2KHR",
+            "vkCmdPushDescriptorSetWithTemplate2","vkCmdPushDescriptorSetWithTemplate2KHR"})
+            if(auto fn=next(device,name))c->functions[name]=fn;
         {std::lock_guard<std::mutex> guard(processSession->mutex);c->id=++processSession->nextId;}
         Record(c,[&](Context& ctx,Session& s) { s.Event({{"event","device"},{"device",ctx.id}}); });
         // Creating the optional probe must not affect ordinary Vulkan dispatch.
-        try { c->camera=std::make_unique<CameraProbe>(processSession->directory,c->id,memory); }
+        std::string drawDisabled;
+        for(uint32_t i=0;i<info.enabledExtensionCount;++i)for(const char* unsupported:{
+            "VK_EXT_shader_object","VK_EXT_descriptor_buffer","VK_EXT_device_generated_commands",
+            "VK_NV_device_generated_commands","VK_NV_command_buffer_inheritance"})
+            if(!strcmp(info.ppEnabledExtensionNames[i],unsupported))drawDisabled=std::string("draw associations disabled: ")+unsupported;
+        try { c->camera=std::make_unique<CameraProbe>(processSession->directory,c->id,memory,drawDisabled); }
         catch(const std::exception& e) { fprintf(stderr,"[fg-camera] unavailable: %s\n",e.what()); }
         contexts[device]=c;
     } catch (const std::exception& e) { startupFailed=true; fprintf(stderr,"[fg-discovery] unavailable: %s\n",e.what()); }
@@ -266,9 +278,12 @@ void Present(VkDevice device,const VkPresentInfoKHR* info) noexcept {
 static VkResult VKAPI_CALL CreateShaderModule(VkDevice d,const VkShaderModuleCreateInfo* ci,const VkAllocationCallbacks* a,VkShaderModule* out) {
     auto c=Get(d);
     auto result=Next<PFN_vkCreateShaderModule>(d,c,"vkCreateShaderModule")(d,ci,a,out);
+    std::string liveHash;
+    if(result==VK_SUCCESS)Camera(c,[&](CameraProbe& p){Require(ci->codeSize<=16*1024*1024 && ci->codeSize%4==0,"unsupported shader size");
+        liveHash=Sha256(ci->pCode,ci->codeSize);p.draws().shader(*out,liveHash);});
     if (result==VK_SUCCESS) Record(c,[&](Context& ctx,Session& s) {
         Require(ci->codeSize<=16*1024*1024 && ci->codeSize%4==0,"unsupported shader size");
-        auto hash=Sha256(ci->pCode,ci->codeSize);
+        auto hash=liveHash.empty()?Sha256(ci->pCode,ci->codeSize):liveHash;
         bool saved=s.shaderFiles.count(hash)!=0;
         if (!saved && !s.shaderDumpFull) {
             if (ci->codeSize>s.maxShaderBytes-s.shaderBytes) {
@@ -289,6 +304,7 @@ static VkResult VKAPI_CALL CreateShaderModule(VkDevice d,const VkShaderModuleCre
 #define DESTROY(Name,Type,Kind) \
 static void VKAPI_CALL Destroy##Name(VkDevice d,Type object,const VkAllocationCallbacks* a) { \
  auto c=Get(d); \
+ Camera(c,[&](CameraProbe& p){p.draws().destroy(Kind,Handle(object));}); \
  if constexpr (Kind==VK_OBJECT_TYPE_BUFFER) Camera(c,[&](CameraProbe& p){p.destroyBuffer((VkBuffer)object);}); \
  Record(c,[&](Context& ctx,Session& s) { s.Event({{"event","destroy"},{"device",ctx.id},{"kind",Kind},{"object",Ref(ctx,Kind,Handle(object))}}); ctx.ids.erase({Kind,Handle(object)}); if (Kind==VK_OBJECT_TYPE_SHADER_MODULE) ctx.shaders.erase(Handle(object)); }); \
  Next<PFN_vkDestroy##Name>(d,c,"vkDestroy" #Name)(d,object,a); }
@@ -308,13 +324,19 @@ static VkResult VKAPI_CALL Create##Name(VkDevice d,const Info* ci,const VkAlloca
  auto result=Next<PFN_vkCreate##Name>(d,c,"vkCreate" #Name)(d,ci,a,out); \
  if (result==VK_SUCCESS) Record(c,[&](Context& ctx,Session& s) {
 #define CREATE_END }); return result; }
-CREATE_START(Image,VkImageCreateInfo,VkImage)
+static VkResult VKAPI_CALL CreateImage(VkDevice d,const VkImageCreateInfo* ci,const VkAllocationCallbacks* a,VkImage* out) {
+    auto c=Get(d);auto result=Next<PFN_vkCreateImage>(d,c,"vkCreateImage")(d,ci,a,out);
+    if(result==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.draws().image(*out,*ci);});
+    if(result==VK_SUCCESS)Record(c,[&](Context& ctx,Session& s){
     auto id=ctx.New(VK_OBJECT_TYPE_IMAGE,Handle(*out));
     s.Event({{"event","image"},{"device",ctx.id},{"id",id},{"format",ci->format},{"type",ci->imageType},
         {"extent",{ci->extent.width,ci->extent.height,ci->extent.depth}},{"mips",ci->mipLevels},{"layers",ci->arrayLayers},
         {"samples",ci->samples},{"usage",ci->usage},{"flags",ci->flags},{"tiling",ci->tiling}});
 CREATE_END
-CREATE_START(ImageView,VkImageViewCreateInfo,VkImageView)
+static VkResult VKAPI_CALL CreateImageView(VkDevice d,const VkImageViewCreateInfo* ci,const VkAllocationCallbacks* a,VkImageView* out) {
+    auto c=Get(d);auto result=Next<PFN_vkCreateImageView>(d,c,"vkCreateImageView")(d,ci,a,out);
+    if(result==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.draws().view(*out,*ci);});
+    if(result==VK_SUCCESS)Record(c,[&](Context& ctx,Session& s){
     auto id=ctx.New(VK_OBJECT_TYPE_IMAGE_VIEW,Handle(*out)); const auto& r=ci->subresourceRange;
     s.Event({{"event","image_view"},{"device",ctx.id},{"id",id},{"image",Ref(ctx,VK_OBJECT_TYPE_IMAGE,Handle(ci->image))},
         {"format",ci->format},{"view_type",ci->viewType},{"aspect",r.aspectMask},{"base_mip",r.baseMipLevel},
@@ -333,7 +355,10 @@ CREATE_START(DescriptorSetLayout,VkDescriptorSetLayoutCreateInfo,VkDescriptorSet
     for (uint32_t i=0;i<ci->bindingCount;++i) { const auto& b=ci->pBindings[i]; bindings.push_back({{"binding",b.binding},{"type",b.descriptorType},{"count",b.descriptorCount},{"stages",b.stageFlags}}); }
     s.Event({{"event","set_layout"},{"device",ctx.id},{"id",ctx.New(VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,Handle(*out))},{"flags",ci->flags},{"bindings",bindings}});
 CREATE_END
-CREATE_START(PipelineLayout,VkPipelineLayoutCreateInfo,VkPipelineLayout)
+static VkResult VKAPI_CALL CreatePipelineLayout(VkDevice d,const VkPipelineLayoutCreateInfo* ci,const VkAllocationCallbacks* a,VkPipelineLayout* out) {
+    auto c=Get(d);auto result=Next<PFN_vkCreatePipelineLayout>(d,c,"vkCreatePipelineLayout")(d,ci,a,out);
+    if(result==VK_SUCCESS)Camera(c,[&](CameraProbe& p){p.draws().layout(*out);});
+    if(result==VK_SUCCESS)Record(c,[&](Context& ctx,Session& s){
     Json sets=Json::array(),push=Json::array();
     for (uint32_t i=0;i<ci->setLayoutCount;++i) sets.push_back(Ref(ctx,VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,Handle(ci->pSetLayouts[i])));
     for (uint32_t i=0;i<ci->pushConstantRangeCount;++i) { const auto& p=ci->pPushConstantRanges[i]; push.push_back({{"offset",p.offset},{"bytes",p.size},{"stages",p.stageFlags}}); }
@@ -362,6 +387,7 @@ static Json Stage(Context& ctx,const VkPipelineShaderStageCreateInfo& x) {
 static VkResult VKAPI_CALL CreateGraphicsPipelines(VkDevice d,VkPipelineCache cache,uint32_t count,const VkGraphicsPipelineCreateInfo* ci,const VkAllocationCallbacks* a,VkPipeline* out) {
     auto c=Get(d);
     auto r=Next<PFN_vkCreateGraphicsPipelines>(d,c,"vkCreateGraphicsPipelines")(d,cache,count,ci,a,out);
+    if(r==VK_SUCCESS)Camera(c,[&](CameraProbe& p){Require(count<=4096,"pipeline batch too large");for(uint32_t i=0;i<count;++i)if(out[i])p.draws().pipeline(out[i],ci[i]);});
     if (r==VK_SUCCESS) Record(c,[&](Context& ctx,Session& s) { Require(count<=4096,"pipeline batch too large"); for(uint32_t i=0;i<count;++i) if(out[i]) {
         Json stages=Json::array(); for(uint32_t j=0;j<ci[i].stageCount;++j) stages.push_back(Stage(ctx,ci[i].pStages[j]));
         s.Event({{"event","graphics_pipeline"},{"device",ctx.id},{"id",ctx.New(VK_OBJECT_TYPE_PIPELINE,Handle(out[i]))},{"stages",stages},
@@ -500,12 +526,67 @@ static void VKAPI_CALL DestroyCommandPool(VkDevice d,VkCommandPool pool,const Vk
 }
 static void VKAPI_CALL CmdBindDescriptorSets(VkCommandBuffer cb,VkPipelineBindPoint point,VkPipelineLayout layout,uint32_t first,uint32_t count,const VkDescriptorSet* sets,uint32_t dynamicCount,const uint32_t* dynamicOffsets) {
     auto c=GetCommand(cb);CommandNext<PFN_vkCmdBindDescriptorSets>(cb,c,"vkCmdBindDescriptorSets")(cb,point,layout,first,count,sets,dynamicCount,dynamicOffsets);
-    Camera(c,[&](CameraProbe& p){p.bindSets(cb,point,first,count,sets);});
+    Camera(c,[&](CameraProbe& p){p.bindSets(cb,point,first,count,sets);p.draws().bindSets(cb,point,layout,first,count,sets,dynamicCount);});
 }
 static void VKAPI_CALL CmdExecuteCommands(VkCommandBuffer cb,uint32_t count,const VkCommandBuffer* children) {
     auto c=GetCommand(cb);CommandNext<PFN_vkCmdExecuteCommands>(cb,c,"vkCmdExecuteCommands")(cb,count,children);
     Camera(c,[&](CameraProbe& p){p.execute(cb,count,children);});
 }
+static void VKAPI_CALL CmdBindPipeline(VkCommandBuffer cb,VkPipelineBindPoint point,VkPipeline pipeline) {
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdBindPipeline>(cb,c,"vkCmdBindPipeline")(cb,point,pipeline);
+    Camera(c,[&](CameraProbe& p){p.draws().bindPipeline(cb,point,pipeline);});
+}
+static void VKAPI_CALL CmdDraw(VkCommandBuffer cb,uint32_t vertices,uint32_t instances,uint32_t firstVertex,uint32_t firstInstance) {
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdDraw>(cb,c,"vkCmdDraw")(cb,vertices,instances,firstVertex,firstInstance);
+    Camera(c,[&](CameraProbe& p){p.draws().draw(cb,"direct",vertices && instances,false);});
+}
+static void VKAPI_CALL CmdDrawIndexed(VkCommandBuffer cb,uint32_t indices,uint32_t instances,uint32_t firstIndex,int32_t vertexOffset,uint32_t firstInstance) {
+    auto c=GetCommand(cb);CommandNext<PFN_vkCmdDrawIndexed>(cb,c,"vkCmdDrawIndexed")(cb,indices,instances,firstIndex,vertexOffset,firstInstance);
+    Camera(c,[&](CameraProbe& p){p.draws().draw(cb,"indexed",indices && instances,false);});
+}
+#define INDIRECT(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,VkBuffer buffer,VkDeviceSize offset,uint32_t count,uint32_t stride) { \
+ auto c=GetCommand(cb);CommandNext<PFN_vk##Name>(cb,c,"vk" #Name)(cb,buffer,offset,count,stride); \
+ Camera(c,[&](CameraProbe& p){p.draws().draw(cb,#Name,count!=0,true);}); }
+INDIRECT(CmdDrawIndirect) INDIRECT(CmdDrawIndexedIndirect)
+#undef INDIRECT
+#define INDIRECT_COUNT(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,VkBuffer buffer,VkDeviceSize offset,VkBuffer countBuffer,VkDeviceSize countOffset,uint32_t maxCount,uint32_t stride) { \
+ auto c=GetCommand(cb);CommandNext<PFN_vk##Name>(cb,c,"vk" #Name)(cb,buffer,offset,countBuffer,countOffset,maxCount,stride); \
+ Camera(c,[&](CameraProbe& p){p.draws().draw(cb,#Name,maxCount!=0,true);}); }
+INDIRECT_COUNT(CmdDrawIndirectCount) INDIRECT_COUNT(CmdDrawIndexedIndirectCount)
+INDIRECT_COUNT(CmdDrawIndirectCountKHR) INDIRECT_COUNT(CmdDrawIndexedIndirectCountKHR)
+INDIRECT_COUNT(CmdDrawIndirectCountAMD) INDIRECT_COUNT(CmdDrawIndexedIndirectCountAMD)
+#undef INDIRECT_COUNT
+#define BIND2(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,const VkBindDescriptorSetsInfoKHR* i) { \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdBindDescriptorSets2KHR>(cb,c,"vk" #Name)(cb,i); \
+ if(i->stageFlags&VK_SHADER_STAGE_ALL_GRAPHICS)Camera(c,[&](CameraProbe& p){ \
+ p.bindSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,i->firstSet,i->descriptorSetCount,i->pDescriptorSets); \
+ p.draws().bindSets(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,i->layout,i->firstSet,i->descriptorSetCount,i->pDescriptorSets,i->dynamicOffsetCount);}); }
+BIND2(CmdBindDescriptorSets2) BIND2(CmdBindDescriptorSets2KHR)
+#undef BIND2
+#define PUSH(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,VkPipelineBindPoint point,VkPipelineLayout layout,uint32_t set,uint32_t count,const VkWriteDescriptorSet* writes) { \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdPushDescriptorSetKHR>(cb,c,"vk" #Name)(cb,point,layout,set,count,writes); \
+ if(point==VK_PIPELINE_BIND_POINT_GRAPHICS)Camera(c,[&](CameraProbe& p){p.draws().invalidateSets(cb);}); }
+PUSH(CmdPushDescriptorSet) PUSH(CmdPushDescriptorSetKHR)
+#undef PUSH
+#define PUSH_TEMPLATE(Name) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,VkDescriptorUpdateTemplate t,VkPipelineLayout layout,uint32_t set,const void* data) { \
+ auto c=GetCommand(cb);CommandNext<PFN_vkCmdPushDescriptorSetWithTemplateKHR>(cb,c,"vk" #Name)(cb,t,layout,set,data); \
+ Camera(c,[&](CameraProbe& p){p.draws().invalidateSets(cb);}); }
+PUSH_TEMPLATE(CmdPushDescriptorSetWithTemplate) PUSH_TEMPLATE(CmdPushDescriptorSetWithTemplateKHR)
+#undef PUSH_TEMPLATE
+#define PUSH2(Name,Type,Pfn) \
+static void VKAPI_CALL Name(VkCommandBuffer cb,const Type* info) { \
+ auto c=GetCommand(cb);CommandNext<Pfn>(cb,c,"vk" #Name)(cb,info); \
+ Camera(c,[&](CameraProbe& p){p.draws().invalidateSets(cb);}); }
+PUSH2(CmdPushDescriptorSet2,VkPushDescriptorSetInfoKHR,PFN_vkCmdPushDescriptorSet2KHR)
+PUSH2(CmdPushDescriptorSet2KHR,VkPushDescriptorSetInfoKHR,PFN_vkCmdPushDescriptorSet2KHR)
+PUSH2(CmdPushDescriptorSetWithTemplate2,VkPushDescriptorSetWithTemplateInfoKHR,PFN_vkCmdPushDescriptorSetWithTemplate2KHR)
+PUSH2(CmdPushDescriptorSetWithTemplate2KHR,VkPushDescriptorSetWithTemplateInfoKHR,PFN_vkCmdPushDescriptorSetWithTemplate2KHR)
+#undef PUSH2
 #define TEMPLATE(Name) \
 static void VKAPI_CALL Name(VkDevice d,VkDescriptorSet s,VkDescriptorUpdateTemplate t,const void* data) { \
  auto c=Get(d);Camera(c,[&](CameraProbe& p){p.invalidate(s);});Next<PFN_vkUpdateDescriptorSetWithTemplate>(d,c,"vk" #Name)(d,s,t,data); }
@@ -538,6 +619,12 @@ PFN_vkVoidFunction Lookup(const char* name,PFN_vkGetDeviceProcAddr fallback) noe
     HOOK(BindBufferMemory) HOOK(BindBufferMemory2) HOOK(BindBufferMemory2KHR)
     HOOK(AllocateCommandBuffers) HOOK(FreeCommandBuffers) HOOK(BeginCommandBuffer) HOOK(ResetCommandBuffer)
     HOOK(ResetCommandPool) HOOK(DestroyCommandPool) HOOK(CmdBindDescriptorSets) HOOK(CmdExecuteCommands)
+    HOOK(CmdBindPipeline) HOOK(CmdDraw) HOOK(CmdDrawIndexed) HOOK(CmdDrawIndirect) HOOK(CmdDrawIndexedIndirect)
+    HOOK(CmdDrawIndirectCount) HOOK(CmdDrawIndexedIndirectCount) HOOK(CmdDrawIndirectCountKHR) HOOK(CmdDrawIndexedIndirectCountKHR)
+    HOOK(CmdDrawIndirectCountAMD) HOOK(CmdDrawIndexedIndirectCountAMD)
+    HOOK(CmdBindDescriptorSets2) HOOK(CmdBindDescriptorSets2KHR)
+    HOOK(CmdPushDescriptorSet) HOOK(CmdPushDescriptorSetKHR) HOOK(CmdPushDescriptorSetWithTemplate) HOOK(CmdPushDescriptorSetWithTemplateKHR)
+    HOOK(CmdPushDescriptorSet2) HOOK(CmdPushDescriptorSet2KHR) HOOK(CmdPushDescriptorSetWithTemplate2) HOOK(CmdPushDescriptorSetWithTemplate2KHR)
     HOOK(UpdateDescriptorSetWithTemplate) HOOK(UpdateDescriptorSetWithTemplateKHR)
     HOOK(CreateShaderModule) HOOK(DestroyShaderModule) HOOK(CreateImage) HOOK(DestroyImage)
     HOOK(CreateImageView) HOOK(DestroyImageView) HOOK(CreateBuffer) HOOK(DestroyBuffer)
