@@ -8,11 +8,12 @@
 #include <mutex>
 #include <set>
 #include "bootstrap_trace.h"
+#include "nr_arm.h"
 #include <vulkan/vulkan_win32.h>
 namespace {
 using namespace dlssnr;
 using Evaluate=uint32_t(__cdecl*)(void*,const void*,const void*,void*);
-HMODULE selfModule{};
+HMODULE selfModule{},nativeLoader{};
 bool enabled=false;
 bool bootstrap=false,augmentBda=true;
 SRWLOCK stateLock=SRWLOCK_INIT,renderLock=SRWLOCK_INIT;
@@ -20,15 +21,21 @@ struct Lock { SRWLOCK* p; Lock(SRWLOCK& s):p(&s){AcquireSRWLockExclusive(p);} ~L
 PFN_vkGetInstanceProcAddr realGipa{};
 PFN_vkGetDeviceProcAddr realGdpa{};
 INIT_ONCE once=INIT_ONCE_STATIC_INIT;
+InlineArm arm;
 BOOL CALLBACK Resolve(PINIT_ONCE,void*,void**) {
-    // user32 is a static dependency and is initialized in DllMain, matching
-    // Wine's builtin vulkan-1. Do not defer display initialization to the first
-    // Vulkan call, which can originate on a different application thread.
+    // Preserve the native loader/ICD chain used by RDR2. The renamed loader
+    // is a hash-pinned private copy of the game's prefix DLL, beside this shim.
     BootstrapTrace trace("resolve",bootstrap);
-    auto wine=LoadLibraryW(L"winevulkan.dll");
-    if(!wine) return FALSE;
-    realGipa=(PFN_vkGetInstanceProcAddr)GetProcAddress(wine,"vkGetInstanceProcAddr");
-    realGdpa=(PFN_vkGetDeviceProcAddr)GetProcAddress(wine,"vkGetDeviceProcAddr");
+    wchar_t path[32768]{};
+    auto count=GetModuleFileNameW(selfModule,path,32768);
+    if(!count || count>=32768) return FALSE;
+    auto slash=wcsrchr(path,L'\\');
+    if(!slash || size_t(slash-path)+32>=32768) return FALSE;
+    wcscpy(slash+1,L"dlssnr_system_vulkan.dll");
+    nativeLoader=LoadLibraryExW(path,nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if(!nativeLoader || nativeLoader==selfModule) return FALSE;
+    realGipa=(PFN_vkGetInstanceProcAddr)GetProcAddress(nativeLoader,"vkGetInstanceProcAddr");
+    realGdpa=(PFN_vkGetDeviceProcAddr)GetProcAddress(nativeLoader,"vkGetDeviceProcAddr");
     return realGipa && realGdpa;
 }
 bool resolve(){return InitOnceExecuteOnce(&once,Resolve,nullptr,nullptr);}
@@ -142,11 +149,13 @@ bool Process(VkCommandBuffer cmd,const void* handle,const void* params,NVSDK_NGX
 }
 }
 
+extern "C" __declspec(dllexport) ULONGLONG DlssNrArmToken() {return arm.token;}
+
 extern "C" __declspec(dllexport) uint32_t DlssNrEvaluate(void* cmd,const void* handle,const void* params,void* callback,Evaluate real) {
     if(bootstrap || !enabled || !TryAcquireSRWLockExclusive(&renderLock)) return real(cmd,handle,params,callback);
     NVSDK_NGX_Resource_VK replacement{};
     const DWORD last=GetLastError(); bool processed=false;
-    try { processed=Process((VkCommandBuffer)cmd,handle,params,replacement); }
+    try { if(arm.allow()) processed=Process((VkCommandBuffer)cmd,handle,params,replacement); }
     catch(...) { disabled=true; Log("[nr-inline] disabled after internal exception"); }
     ngx_capture::ColorOverlay overlay(params,&replacement);
     SetLastError(last);
@@ -158,14 +167,14 @@ extern "C" __declspec(dllexport) uint32_t DlssNrEvaluate(void* cmd,const void* h
 
 extern "C" VkResult VKAPI_CALL NrEnumerate(VkInstance i,uint32_t* n,VkPhysicalDevice* p) {
     BootstrapTrace trace("vkEnumeratePhysicalDevices",bootstrap);
-    resolve(); auto fn=(PFN_vkEnumeratePhysicalDevices)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkEnumeratePhysicalDevices");
+    resolve(); auto fn=(PFN_vkEnumeratePhysicalDevices)GetProcAddress(nativeLoader,"vkEnumeratePhysicalDevices");
     auto r=fn(i,n,p);
     if(enabled && p && (r==VK_SUCCESS || r==VK_INCOMPLETE)) {Lock lock(stateLock); for(unsigned j=0;j<*n;++j) physicals[p[j]]=i;}
     trace.done(r);return r;
 }
 extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceCreateInfo* info,const VkAllocationCallbacks* alloc,VkDevice* out) {
     BootstrapTrace trace("vkCreateDevice",bootstrap);
-    resolve(); auto fn=(PFN_vkCreateDevice)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateDevice");
+    resolve(); auto fn=(PFN_vkCreateDevice)GetProcAddress(nativeLoader,"vkCreateDevice");
     if(!enabled) {auto result=fn(p,info,alloc,out);trace.done(result);return result;}
     VkInstance instance{}; {Lock lock(stateLock); auto it=physicals.find(p); if(it!=physicals.end()) instance=it->second;}
     // NR needs buffer device addresses. Add the supported KHR feature only when
@@ -236,8 +245,8 @@ extern "C" VkResult VKAPI_CALL NrAllocate(VkDevice d,const VkCommandBufferAlloca
 }
 extern "C" VkResult VKAPI_CALL NrBegin(VkCommandBuffer cmd,const VkCommandBufferBeginInfo* info) {
     BootstrapTrace trace("vkBeginCommandBuffer",bootstrap);
-    resolve(); auto wine=GetModuleHandleW(L"winevulkan.dll");
-    auto result=((PFN_vkBeginCommandBuffer)GetProcAddress(wine,"vkBeginCommandBuffer"))(cmd,info);
+    resolve();
+    auto result=((PFN_vkBeginCommandBuffer)GetProcAddress(nativeLoader,"vkBeginCommandBuffer"))(cmd,info);
     if(enabled && result==VK_SUCCESS) {Lock lock(stateLock); auto it=commands.find(cmd);
         if(it!=commands.end()) {it->second.usable=!(info->flags&VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT) && !info->pInheritanceInfo;it->second.used=false;}}
     trace.done(result);return result;
@@ -273,43 +282,43 @@ extern "C" PFN_vkVoidFunction VKAPI_CALL NrGdpa(VkDevice,const char*);
 extern "C" VkResult VKAPI_CALL NrCreateInstance(const VkInstanceCreateInfo* i,const VkAllocationCallbacks* a,VkInstance* o) {
     BootstrapTrace trace("vkCreateInstance",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
-    auto fn=(PFN_vkCreateInstance)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateInstance");
+    auto fn=(PFN_vkCreateInstance)GetProcAddress(nativeLoader,"vkCreateInstance");
     auto result=fn(i,a,o);trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrCreateSurface(VkInstance i,const VkWin32SurfaceCreateInfoKHR* c,const VkAllocationCallbacks* a,VkSurfaceKHR* o) {
     BootstrapTrace trace("vkCreateWin32SurfaceKHR",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
-    auto fn=(PFN_vkCreateWin32SurfaceKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateWin32SurfaceKHR");
+    auto fn=(PFN_vkCreateWin32SurfaceKHR)GetProcAddress(nativeLoader,"vkCreateWin32SurfaceKHR");
     auto result=fn(i,c,a,o);trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrCreateSwapchain(VkDevice d,const VkSwapchainCreateInfoKHR* c,const VkAllocationCallbacks* a,VkSwapchainKHR* o) {
     BootstrapTrace trace("vkCreateSwapchainKHR",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
-    auto fn=(PFN_vkCreateSwapchainKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateSwapchainKHR");
+    auto fn=(PFN_vkCreateSwapchainKHR)GetProcAddress(nativeLoader,"vkCreateSwapchainKHR");
     auto result=fn(d,c,a,o);trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrSubmit(VkQueue q,uint32_t n,const VkSubmitInfo* s,VkFence f) {
     BootstrapTrace trace("vkQueueSubmit",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
-    auto fn=(PFN_vkQueueSubmit)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkQueueSubmit");
+    auto fn=(PFN_vkQueueSubmit)GetProcAddress(nativeLoader,"vkQueueSubmit");
     auto result=fn(q,n,s,f);trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrWait(VkDevice d,uint32_t n,const VkFence* f,VkBool32 all,uint64_t timeout) {
     BootstrapTrace trace("vkWaitForFences",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
-    auto fn=(PFN_vkWaitForFences)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkWaitForFences");
+    auto fn=(PFN_vkWaitForFences)GetProcAddress(nativeLoader,"vkWaitForFences");
     auto result=fn(d,n,f,all,timeout);trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrAcquire(VkDevice d,VkSwapchainKHR s,uint64_t t,VkSemaphore sem,VkFence f,uint32_t* i) {
     BootstrapTrace trace("vkAcquireNextImageKHR",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
-    auto fn=(PFN_vkAcquireNextImageKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkAcquireNextImageKHR");
+    auto fn=(PFN_vkAcquireNextImageKHR)GetProcAddress(nativeLoader,"vkAcquireNextImageKHR");
     auto result=fn(d,s,t,sem,f,i);trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrPresent(VkQueue q,const VkPresentInfoKHR* p) {
     BootstrapTrace trace("vkQueuePresentKHR",bootstrap);
     if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
-    auto fn=(PFN_vkQueuePresentKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkQueuePresentKHR");
+    auto fn=(PFN_vkQueuePresentKHR)GetProcAddress(nativeLoader,"vkQueuePresentKHR");
     auto result=fn(q,p);trace.done(result);return result;
 }
 static PFN_vkVoidFunction Wrap(const char* n,PFN_vkVoidFunction original) {
@@ -341,7 +350,7 @@ extern "C" PFN_vkVoidFunction VKAPI_CALL NrGdpa(VkDevice d,const char* n) {retur
 BOOL WINAPI DllMain(HINSTANCE self,DWORD why,void*) {
     if(why==DLL_PROCESS_ATTACH) {
         selfModule=self; DisableThreadLibraryCalls(self);
-        GetDpiForSystem(); // Same process-attach dependency as builtin vulkan-1.
+        arm.configure();
         wchar_t path[32768]{},flag[8]{}; auto count=GetModuleFileNameW(nullptr,path,32768);
         auto base=wcsrchr(path,L'\\'); base=base?base+1:path;
         enabled=count && count<32768 && !_wcsicmp(base,L"RDR2.exe") &&

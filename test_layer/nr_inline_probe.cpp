@@ -48,6 +48,7 @@ static uint32_t __cdecl Sr(void* command,const void* handle,const void* p,void* 
     Callback(.5f);SetLastError(172);return 1;
 }
 int main() {
+    const bool armCycle=getenv("DLSSNR_PROBE_ARM_CYCLE")!=nullptr;
     const bool realMode=getenv("DLSSNR_PROBE_REAL_SR")!=nullptr;
     const unsigned ow=realMode?W*3/2:W,oh=realMode?H*3/2:H;
     if(!CreateContext(context,getenv("DLSSNR_PROBE_BDA_AUTO")==nullptr)) return 2;
@@ -115,7 +116,19 @@ int main() {
     }
     auto before=ngx_capture::Snapshot(&p);
     unsigned changed=0,high=0,alpha=0;
-    for(unsigned frame=0;frame<3;++frame) {
+    const unsigned frameCount=armCycle?4:3;
+    for(unsigned frame=0;frame<frameCount;++frame) {
+        if(armCycle) {
+            wchar_t path[32768]{};if(!GetEnvironmentVariableW(L"DLSSNR_ARM_FILE",path,32768))return 11;
+            if(frame==0 || frame==3)DeleteFileW(path);
+            else {
+                auto token=(ULONGLONG(*)())GetProcAddress(GetModuleHandleW(L"vulkan-1.dll"),"DlssNrArmToken");
+                if(!token)return 11;
+                auto f=_wfopen(path,L"w");if(!f)return 11;
+                fprintf(f,"%lu %llu 1\n",GetCurrentProcessId(),token()+(frame==1?1:0));fclose(f);
+            }
+            Sleep(275);
+        }
         if(!BeginCmd(context.cmdEval)) return 6;
         for(auto* i:{&color,&motion,&exposure,&depth})TransitionImage(context,context.cmdEval,*i,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_ACCESS_MEMORY_WRITE_BIT,VK_ACCESS_SHADER_READ_BIT,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -131,6 +144,8 @@ int main() {
             if(i%4==3) {if(i<pixels.size())alpha+=result[i]==pixels[i];}else high+=(result[i]&0x8000)==0 && result[i]>0x3c00;
         }
         if(before!=ngx_capture::Snapshot(&p)) return 8;
+        if(armCycle && ((frame==2)?changed<=100:changed!=0))return 11;
+        if(armCycle && frame<2 && GetModuleHandleW(L"nvngx_dlssnr.dll"))return 11;
     }
     vkDeviceWaitIdle(context.device);
     if(realMode){srRelease(realHandle);srShutdown(context.device);RemoveCallerSpoof(srSpoof);FreeLibrary(srModule);}
@@ -148,8 +163,8 @@ int main() {
     // The shim must clean up only its own resources before forwarding destroy.
     vkDestroyDevice(context.device,nullptr);
     const bool expectNr=getenv("DLSSNR_EXPECT_BYPASS")==nullptr;
-    bool pass=calls==3 && (realMode || callbacks==3) && replacements==(expectNr?3u:0u) &&
-        (expectNr?changed>100:changed==0) && high>100 && (realMode || alpha==W*H) && errors==0;
+    bool pass=calls==frameCount && (realMode || callbacks==frameCount) && replacements==(armCycle?1u:(expectNr?3u:0u)) &&
+        ((expectNr && !armCycle)?changed>100:changed==0) && high>100 && (realMode || alpha==W*H) && errors==0;
     Log("[inline-probe] %s calls=%u callbacks=%u replacements=%u changed=%u hdr=%u alpha=%u validationErrors=%u",
         pass?"PASS":"FAIL",calls,callbacks,replacements,changed,high,alpha,errors);
     return pass?0:9;

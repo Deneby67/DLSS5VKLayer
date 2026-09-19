@@ -3,19 +3,16 @@
 The active experiment is **DLSS 5 NR → the game's existing DLSS SR**. FG work is
 deferred. Nothing creates generated frames or replaces the game's presentation.
 
-**Runtime status, 2026-09-19: rolled back.** RDR2 hung before the main menu with
-the Vulkan shim installed. Its journal reached successful BDA-enabled device
-creation, and the NGX observer attached all four hooks, but no SR creation or
-NR processing was recorded. The process had already exited when inspected, so
-no blocked-thread stack was available. The exact cause is unresolved; the
-offscreen tests below do not establish startup compatibility with the game.
-The previous observer and launch wrapper were restored and the application-local
-Vulkan DLL/inline selection marker removed. Reinstallation through the installer
-is disabled until startup has been diagnosed and validated. The forward-only
-startup diagnostic also reproduced the hang and has now been removed. The
-working startup has been restored and the user confirmed the menu. Both NR
-paths are disabled and both experimental installers are blocked. The actual
-loader is the game's native prefix Vulkan DLL, not Wine's builtin loader. See startup isolation below.
+**Runtime status, 2026-09-19: corrected native-loader candidate validated in
+isolated fixtures; RDR2 restart pending.** The old direct-winevulkan shim hung
+before the menu and was removed. The user confirmed working startup after that
+rollback. Inspection established that working RDR2 uses a native Windows Vulkan
+loader from its prefix. The new shim preserves that loader using a private,
+hash-pinned sibling copy, `dlssnr_system_vulkan.dll`; the original prefix stays
+untouched. Eleven native-loader validation gates and six NGX observer cases
+passed. These do not establish compatibility or visual quality in actual RDR2.
+The two old installers remain blocked. Use only `tools/install-nr-native.py`
+for this candidate, which starts with NR disarmed and provides exact rollback.
 
 The NGX observer dispatches known SuperSampling feature evaluations to an
 application-local Vulkan forwarding shim. The shim records HDR encoding, NR,
@@ -24,9 +21,9 @@ before forwarding the original SR evaluation exactly once. A 17-slot MSVC NGX
 parameter overlay replaces only Color lookups. Original depth, motion, jitter,
 exposure and other getters continue to read the game's parameter object.
 
-The shim forwards the selected Proton's complete vulkan-1 export surface to
-winevulkan, wrapping only device/command-buffer lifetime and proc-address
-lookups. All handles stay in Wine's Windows Vulkan namespace. It does not send
+The shim preserves the native loader's named exports and ordinals, forwarding
+to its renamed sibling and wrapping device/command-buffer lifetime and
+proc-address lookups. All handles stay in the same Windows Vulkan namespace. It does not send
 pixels to the external helper, read them on the CPU, submit work on another
 queue, intercept draws or wait for GPU completion during normal evaluation.
 Device destruction waits before releasing the experiment's own resources.
@@ -90,7 +87,8 @@ python3 tools/run-nr-inline-probe.py --inline --validation --case bda-auto
 python3 tools/run-nr-inline-probe.py --inline --validation --case real-sr
 bash tools/build-ngx-capture.sh
 python3 tools/test-ngx-capture.py
-# Installation is currently blocked by the known game-startup regression.
+# Additional native startup/arming gates are listed below.
+python3 tools/install-nr-native.py --dry-run
 ```
 
 Builds use at most 24 linker workers. Tests use a separate prefix and synthetic
@@ -113,21 +111,50 @@ Tested NR DLL SHA-256:
 Tested game SR DLL SHA-256:
 `3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983`.
 
-Private test artifacts and NVIDIA DLLs remain outside Git. Once startup is fixed,
-installation requires
-matching successful validation artifacts and backs up every replaced file,
-including the previous NGX observer, wrapper and selection markers. Unknown
-existing Vulkan DLLs are never overwritten. The selected Proton is unchanged.
+## Native-loader installation and live control
 
-The Steam wrapper disables the old presentation-time NR and draw discovery when
-inline NR is selected. The separate helper may remain open, but does not process
-this game's presentation. On a normal game restart the new libraries take effect.
-`DLSSNR_INLINE=0` before the wrapper disables the new selection; the emitted
-backup `restore.py` restores the exact previous installation. The journal is
-`~/.local/state/dlssnr/nr-inline.log`. `recorded NR-before-SR calls` reports CPU
-recording, not measured GPU completion or confirmed visual quality in the game.
+Private test artifacts and proprietary DLLs remain outside Git. The installer
+requires the pinned game executable, native loader, model, actual SR DLL and
+matching successful validation artifacts for the exact adapter and fixtures:
+`native-baseline`, `bootstrap-wsi`, `bootstrap-forward`, `bootstrap-track`,
+`bootstrap-bda`, `launcher`, `disabled`, `missing-dll`, `bda-auto`, `armed-cycle`,
+`real-sr`, plus all six NGX observer gates. All passed with the current native
+backend; the actual NR → SR fixture completed three frames without Vulkan
+validation errors. The arming fixture verified missing and stale requests leave
+pixels unchanged without loading NR, valid activation changes pixels, and
+removing the request returns to unchanged forwarding.
 
-## Startup isolation after rollback
+```sh
+python3 tools/run-nr-inline-probe.py --inline --validation --case native-baseline
+python3 tools/run-nr-inline-probe.py --inline --validation --case armed-cycle
+python3 tools/install-nr-native.py --dry-run
+python3 tools/install-nr-native.py
+# After restart and an SR evaluation in a loaded scene:
+python3 tools/control-nr-inline.py ~/.local/state/dlssnr/native-inline/run-XXXXXXXX/adapter.log status
+python3 tools/control-nr-inline.py ~/.local/state/dlssnr/native-inline/run-XXXXXXXX/adapter.log on
+python3 tools/control-nr-inline.py ~/.local/state/dlssnr/native-inline/run-XXXXXXXX/adapter.log off
+```
+
+The installer backs up every replaced file and writes a hash-checked restore
+script before changes. Unknown existing Vulkan DLLs are never overwritten.
+Stable Proton, the prefix loader and Steam launch options stay unchanged. New
+DLLs take effect on a normal user-controlled restart. The emitted backup's
+`restore.py` restores the exact previous working observer and launch wrapper.
+
+The wrapper disables presentation NR, draw discovery and RenderDoc. Device
+tracking and supported BDA augmentation run at startup; NR remains off until a
+request matches the current Windows PID and session token. Each launch gets a
+private log/control directory. The controller additionally verifies that one
+live RDR2 process has the matching environment and holds that log open. Requests
+are checked during SR evaluation at most every 250 ms. Removing the request or
+selecting `off` stops NR recording, retaining resources for already queued work
+until device teardown. This control cannot recover a blocked render thread.
+
+`recorded NR-before-SR calls` reports CPU recording, not measured GPU completion
+or confirmed visual quality. Successful RDR2 startup, scene stability and a
+quality/performance comparison remain required.
+
+## Historical startup isolation (superseded direct-winevulkan candidates)
 
 `tools/install-nr-bootstrap.py` prepares a **forward-only** diagnostic independently
 of the blocked inline installer. It keeps the confirmed working NGX observer and
