@@ -7,11 +7,14 @@
 #include "../core/guard.h"
 #include <mutex>
 #include <set>
+#include "bootstrap_trace.h"
+#include <vulkan/vulkan_win32.h>
 namespace {
 using namespace dlssnr;
 using Evaluate=uint32_t(__cdecl*)(void*,const void*,const void*,void*);
 HMODULE selfModule{};
 bool enabled=false;
+bool bootstrap=false,augmentBda=true;
 SRWLOCK stateLock=SRWLOCK_INIT,renderLock=SRWLOCK_INIT;
 struct Lock { SRWLOCK* p; Lock(SRWLOCK& s):p(&s){AcquireSRWLockExclusive(p);} ~Lock(){ReleaseSRWLockExclusive(p);} };
 PFN_vkGetInstanceProcAddr realGipa{};
@@ -20,6 +23,7 @@ INIT_ONCE once=INIT_ONCE_STATIC_INIT;
 BOOL CALLBACK Resolve(PINIT_ONCE,void*,void**) {
     // Wine's builtin vulkan-1 initializes user32 before using winevulkan.
     // Do the same outside our loader-lock entry point.
+    BootstrapTrace trace("resolve",bootstrap);
     auto user=LoadLibraryW(L"user32.dll");
     auto dpi=user?(UINT(WINAPI*)())GetProcAddress(user,"GetDpiForSystem"):nullptr;
     if(dpi) dpi();
@@ -141,7 +145,7 @@ bool Process(VkCommandBuffer cmd,const void* handle,const void* params,NVSDK_NGX
 }
 
 extern "C" __declspec(dllexport) uint32_t DlssNrEvaluate(void* cmd,const void* handle,const void* params,void* callback,Evaluate real) {
-    if(!enabled || !TryAcquireSRWLockExclusive(&renderLock)) return real(cmd,handle,params,callback);
+    if(bootstrap || !enabled || !TryAcquireSRWLockExclusive(&renderLock)) return real(cmd,handle,params,callback);
     NVSDK_NGX_Resource_VK replacement{};
     const DWORD last=GetLastError(); bool processed=false;
     try { processed=Process((VkCommandBuffer)cmd,handle,params,replacement); }
@@ -155,14 +159,17 @@ extern "C" __declspec(dllexport) uint32_t DlssNrEvaluate(void* cmd,const void* h
 }
 
 extern "C" VkResult VKAPI_CALL NrEnumerate(VkInstance i,uint32_t* n,VkPhysicalDevice* p) {
+    BootstrapTrace trace("vkEnumeratePhysicalDevices",bootstrap);
     resolve(); auto fn=(PFN_vkEnumeratePhysicalDevices)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkEnumeratePhysicalDevices");
     auto r=fn(i,n,p);
     if(enabled && p && (r==VK_SUCCESS || r==VK_INCOMPLETE)) {Lock lock(stateLock); for(unsigned j=0;j<*n;++j) physicals[p[j]]=i;}
-    return r;
+    trace.done(r);return r;
 }
 extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceCreateInfo* info,const VkAllocationCallbacks* alloc,VkDevice* out) {
-    VkInstance instance{}; {Lock lock(stateLock); auto it=physicals.find(p); if(it!=physicals.end()) instance=it->second;}
+    BootstrapTrace trace("vkCreateDevice",bootstrap);
     resolve(); auto fn=(PFN_vkCreateDevice)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateDevice");
+    if(!enabled) {auto result=fn(p,info,alloc,out);trace.done(result);return result;}
+    VkInstance instance{}; {Lock lock(stateLock); auto it=physicals.find(p); if(it!=physicals.end()) instance=it->second;}
     // NR needs buffer device addresses. Add the supported KHR feature only when
     // there is no existing BDA/Vulkan12 declaration to conflict with. Never edit
     // the game's pNext objects or silently override an explicit false field.
@@ -176,7 +183,7 @@ extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceC
         auto name=info->ppEnabledExtensionNames[i];extensions.push_back(name);
         extBda|=!strcmp(name,"VK_EXT_buffer_device_address");hasKhr|=!strcmp(name,"VK_KHR_buffer_device_address");
     }
-    if(enabled && instance && !declared && !extBda) {
+    if(enabled && augmentBda && instance && !declared && !extBda) {
         auto features=(PFN_vkGetPhysicalDeviceFeatures2)realGipa(instance,"vkGetPhysicalDeviceFeatures2");
         auto enumerate=(PFN_vkEnumerateDeviceExtensionProperties)realGipa(instance,"vkEnumerateDeviceExtensionProperties");
         VkPhysicalDeviceFeatures2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};queried.pNext=&bda;
@@ -211,28 +218,31 @@ extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceC
         {Lock lock(stateLock); devices[*out]=d;}
         Log("[nr-inline] Vulkan device observed; bufferDeviceAddress=%u",unsigned(d.bda));
     }
-    return result;
+    trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrCreatePool(VkDevice d,const VkCommandPoolCreateInfo* info,const VkAllocationCallbacks* a,VkCommandPool* out) {
+    BootstrapTrace trace("vkCreateCommandPool",bootstrap);
     resolve();
     auto result=((PFN_vkCreateCommandPool)realGdpa(d,"vkCreateCommandPool"))(d,info,a,out);
     if(enabled && result==VK_SUCCESS) {Lock lock(stateLock); pools[*out]={d,info->queueFamilyIndex};}
-    return result;
+    trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrAllocate(VkDevice d,const VkCommandBufferAllocateInfo* info,VkCommandBuffer* out) {
+    BootstrapTrace trace("vkAllocateCommandBuffers",bootstrap);
     resolve();
     auto result=((PFN_vkAllocateCommandBuffers)realGdpa(d,"vkAllocateCommandBuffers"))(d,info,out);
     if(enabled && result==VK_SUCCESS) {Lock lock(stateLock); auto pool=pools.find(info->commandPool);
         if(pool!=pools.end()) for(unsigned i=0;i<info->commandBufferCount;++i)
             commands[out[i]]={d,info->commandPool,pool->second.family,false,false};}
-    return result;
+    trace.done(result);return result;
 }
 extern "C" VkResult VKAPI_CALL NrBegin(VkCommandBuffer cmd,const VkCommandBufferBeginInfo* info) {
+    BootstrapTrace trace("vkBeginCommandBuffer",bootstrap);
     resolve(); auto wine=GetModuleHandleW(L"winevulkan.dll");
     auto result=((PFN_vkBeginCommandBuffer)GetProcAddress(wine,"vkBeginCommandBuffer"))(cmd,info);
     if(enabled && result==VK_SUCCESS) {Lock lock(stateLock); auto it=commands.find(cmd);
         if(it!=commands.end()) {it->second.usable=!(info->flags&VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT) && !info->pInheritanceInfo;it->second.used=false;}}
-    return result;
+    trace.done(result);return result;
 }
 extern "C" void VKAPI_CALL NrFree(VkDevice d,VkCommandPool pool,uint32_t n,const VkCommandBuffer* cmds) {
     resolve();
@@ -261,10 +271,66 @@ extern "C" void VKAPI_CALL NrDestroyDevice(VkDevice d,const VkAllocationCallback
 }
 extern "C" PFN_vkVoidFunction VKAPI_CALL NrGipa(VkInstance,const char*);
 extern "C" PFN_vkVoidFunction VKAPI_CALL NrGdpa(VkDevice,const char*);
+// Bootstrap-only breadcrumbs; all application arguments are forwarded unchanged.
+extern "C" VkResult VKAPI_CALL NrCreateInstance(const VkInstanceCreateInfo* i,const VkAllocationCallbacks* a,VkInstance* o) {
+    BootstrapTrace trace("vkCreateInstance",bootstrap);
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkCreateInstance)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateInstance");
+    auto result=fn(i,a,o);trace.done(result);return result;
+}
+extern "C" VkResult VKAPI_CALL NrCreateSurface(VkInstance i,const VkWin32SurfaceCreateInfoKHR* c,const VkAllocationCallbacks* a,VkSurfaceKHR* o) {
+    BootstrapTrace trace("vkCreateWin32SurfaceKHR",bootstrap);
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkCreateWin32SurfaceKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateWin32SurfaceKHR");
+    auto result=fn(i,c,a,o);trace.done(result);return result;
+}
+extern "C" VkResult VKAPI_CALL NrCreateSwapchain(VkDevice d,const VkSwapchainCreateInfoKHR* c,const VkAllocationCallbacks* a,VkSwapchainKHR* o) {
+    BootstrapTrace trace("vkCreateSwapchainKHR",bootstrap);
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkCreateSwapchainKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkCreateSwapchainKHR");
+    auto result=fn(d,c,a,o);trace.done(result);return result;
+}
+extern "C" VkResult VKAPI_CALL NrSubmit(VkQueue q,uint32_t n,const VkSubmitInfo* s,VkFence f) {
+    BootstrapTrace trace("vkQueueSubmit",bootstrap);
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkQueueSubmit)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkQueueSubmit");
+    auto result=fn(q,n,s,f);trace.done(result);return result;
+}
+extern "C" VkResult VKAPI_CALL NrWait(VkDevice d,uint32_t n,const VkFence* f,VkBool32 all,uint64_t timeout) {
+    BootstrapTrace trace("vkWaitForFences",bootstrap);
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkWaitForFences)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkWaitForFences");
+    auto result=fn(d,n,f,all,timeout);trace.done(result);return result;
+}
+extern "C" VkResult VKAPI_CALL NrAcquire(VkDevice d,VkSwapchainKHR s,uint64_t t,VkSemaphore sem,VkFence f,uint32_t* i) {
+    BootstrapTrace trace("vkAcquireNextImageKHR",bootstrap);
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkAcquireNextImageKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkAcquireNextImageKHR");
+    auto result=fn(d,s,t,sem,f,i);trace.done(result);return result;
+}
+extern "C" VkResult VKAPI_CALL NrPresent(VkQueue q,const VkPresentInfoKHR* p) {
+    BootstrapTrace trace("vkQueuePresentKHR",bootstrap);
+    if(!resolve()) return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkQueuePresentKHR)GetProcAddress(GetModuleHandleW(L"winevulkan.dll"),"vkQueuePresentKHR");
+    auto result=fn(q,p);trace.done(result);return result;
+}
 static PFN_vkVoidFunction Wrap(const char* n,PFN_vkVoidFunction original) {
-    if(!enabled || !original || !n) return original;
+    if((!enabled && !bootstrap) || !original || !n) return original;
 #define HOOK(name,fn) if(!strcmp(n,name)) return (PFN_vkVoidFunction)&fn;
+    if(bootstrap) {
+        HOOK("vkCreateInstance",NrCreateInstance)
+        HOOK("vkCreateWin32SurfaceKHR",NrCreateSurface)
+        HOOK("vkCreateSwapchainKHR",NrCreateSwapchain)
+        HOOK("vkQueueSubmit",NrSubmit)
+        HOOK("vkWaitForFences",NrWait)
+        HOOK("vkAcquireNextImageKHR",NrAcquire)
+        HOOK("vkQueuePresentKHR",NrPresent)
+    }
     HOOK("vkGetInstanceProcAddr",NrGipa) HOOK("vkGetDeviceProcAddr",NrGdpa)
+    if(!enabled) {
+        HOOK("vkCreateDevice",NrCreateDevice)
+        return original;
+    }
     HOOK("vkEnumeratePhysicalDevices",NrEnumerate) HOOK("vkCreateDevice",NrCreateDevice)
     HOOK("vkCreateCommandPool",NrCreatePool) HOOK("vkDestroyCommandPool",NrDestroyPool)
     HOOK("vkAllocateCommandBuffers",NrAllocate) HOOK("vkFreeCommandBuffers",NrFree)
@@ -281,6 +347,15 @@ BOOL WINAPI DllMain(HINSTANCE self,DWORD why,void*) {
         auto base=wcsrchr(path,L'\\'); base=base?base+1:path;
         enabled=count && count<32768 && !_wcsicmp(base,L"RDR2.exe") &&
             GetEnvironmentVariableW(L"DLSSNR_INLINE",flag,8)==1 && flag[0]=='1';
+        wchar_t mode[16]{};
+        if(count && count<32768 && !_wcsicmp(base,L"RDR2.exe") &&
+           GetEnvironmentVariableW(L"DLSSNR_BOOTSTRAP",mode,16)>0) {
+            bootstrap=!wcscmp(mode,L"forward") || !wcscmp(mode,L"track") || !wcscmp(mode,L"bda");
+            if(bootstrap) {
+                enabled=wcscmp(mode,L"forward")!=0;
+                augmentBda=!wcscmp(mode,L"bda");
+            }
+        }
     }
     return TRUE;
 }

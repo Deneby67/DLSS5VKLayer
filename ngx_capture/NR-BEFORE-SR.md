@@ -11,7 +11,9 @@ no blocked-thread stack was available. The exact cause is unresolved; the
 offscreen tests below do not establish startup compatibility with the game.
 The previous observer and launch wrapper were restored and the application-local
 Vulkan DLL/inline selection marker removed. Reinstallation through the installer
-is disabled until startup has been diagnosed and validated.
+is disabled until startup has been diagnosed and validated. A separate forward-only
+startup diagnostic is now installed for the next launch, with inline NR forced
+off; its RDR2 menu check is pending. See startup isolation below.
 
 The NGX observer dispatches known SuperSampling feature evaluations to an
 application-local Vulkan forwarding shim. The shim records HDR encoding, NR,
@@ -122,3 +124,50 @@ this game's presentation. On a normal game restart the new libraries take effect
 backup `restore.py` restores the exact previous installation. The journal is
 `~/.local/state/dlssnr/nr-inline.log`. `recorded NR-before-SR calls` reports CPU
 recording, not measured GPU completion or confirmed visual quality in the game.
+
+## Startup isolation after rollback
+
+`tools/install-nr-bootstrap.py` prepares a **forward-only** diagnostic independently
+of the blocked inline installer. It keeps the confirmed working NGX observer and
+Proton, backs up the launch wrapper, installs the tested Vulkan DLL, forces
+`DLSSNR_INLINE=0` and selects `DLSSNR_BOOTSTRAP=forward`. `DlssNrEvaluate` also
+unconditionally bypasses NR in every bootstrap mode, even if invoked by a caller.
+Device creation receives the original pointers and values; no BDA augmentation
+or command tracking runs in forward mode. Existing presentation-layer selection
+is preserved. Each launch gets its own private log directory.
+
+The other isolated fixture modes are `bootstrap-track` (device/command tracking
+only) and `bootstrap-bda` (tracking plus BDA augmentation); neither runs NR.
+They are not selected by the diagnostic installer. The old inline installation
+block remains in place. Forward-only startup success will not prove the full
+NR path works, nor identify BDA or tracking as the cause without another test.
+
+A direct exported `vkCreateInstance` previously bypassed the shim's delayed
+user32 initialization. It now resolves the Wine context first, matching the
+initialization dependency of Wine's builtin Vulkan DLL. This is a concrete
+bootstrap coverage gap, **not a confirmed explanation of the RDR2 hang**.
+The new `bootstrap-wsi` fixture creates an actual Win32 window using that direct
+export before GIPA, creates a swapchain, and presents three frames. Together
+with the existing GIPA-based HDR fixture it covers both entry routes.
+
+Startup tracing records only the first 32 calls per API, with thread, timestamp,
+entry and result, including instance/device creation, surface/swapchain,
+submission, waits and presentation. It does not capture images, intercept draws,
+suspend threads or insert GPU waits. The isolated WSI test waits for its own
+queue between frames. Use `tools/analyze-nr-bootstrap.py LOG` to inspect pending
+entries and completed calls. Silence after the limit is not evidence of a hang.
+
+```sh
+python3 tools/run-nr-inline-probe.py --inline --validation --case bootstrap-forward
+python3 tools/run-nr-inline-probe.py --inline --validation --case bootstrap-track
+python3 tools/run-nr-inline-probe.py --inline --validation --case bootstrap-bda
+python3 tools/run-nr-inline-probe.py --inline --validation --case bootstrap-wsi
+python3 tools/run-nr-inline-probe.py --inline --validation --case launcher
+python3 tools/run-nr-inline-probe.py --inline --validation --case disabled
+python3 tools/install-nr-bootstrap.py --dry-run
+```
+
+Installation requires matching hashes for all six successful validation gates,
+the known game executable, working observer and recorded launch wrapper. The
+rollback script is written before changes and refuses to overwrite later edits.
+A real RDR2 restart and menu check is still required for this diagnostic build.

@@ -28,7 +28,10 @@ p=Path(sys.argv[1])
 hooks={'vkGetInstanceProcAddr':'NrGipa','vkGetDeviceProcAddr':'NrGdpa','vkEnumeratePhysicalDevices':'NrEnumerate',
        'vkCreateDevice':'NrCreateDevice','vkCreateCommandPool':'NrCreatePool','vkDestroyCommandPool':'NrDestroyPool',
        'vkAllocateCommandBuffers':'NrAllocate','vkFreeCommandBuffers':'NrFree','vkBeginCommandBuffer':'NrBegin',
-       'vkDestroyDevice':'NrDestroyDevice'}
+       'vkDestroyDevice':'NrDestroyDevice','vkCreateInstance':'NrCreateInstance',
+       'vkCreateWin32SurfaceKHR':'NrCreateSurface','vkCreateSwapchainKHR':'NrCreateSwapchain',
+       'vkQueueSubmit':'NrSubmit','vkWaitForFences':'NrWait',
+       'vkAcquireNextImageKHR':'NrAcquire','vkQueuePresentKHR':'NrPresent'}
 lines=['LIBRARY vulkan-1','EXPORTS']
 for block in re.findall(r'Export \{(.*?)\}',(p/'vulkan-exports.txt').read_text(),re.S):
     name=re.search(r'Name: (\S+)',block)[1]; ordinal=re.search(r'Ordinal: (\d+)',block)[1]
@@ -38,3 +41,5 @@ for block in re.findall(r'Export \{(.*?)\}',(p/'vulkan-exports.txt').read_text()
 PY
 "$llvm/clang++" "${flags[@]}" -shared ngx_capture/nr_vulkan.cpp core/ngx_snippet.cpp core/guard.cpp "$out/vulkan.def" -lwinpthread -o "$out/vulkan-1.dll"
 "$llvm/clang++" "${flags[@]}" test_layer/nr_inline_probe.cpp -lwinpthread -o "$out/nr_inline_probe.exe"
+
+"$llvm/clang++" "${flags[@]}" test_layer/nr_bootstrap_wsi.cpp -luser32 -lwinpthread -o "$out/nr_bootstrap_wsi.exe"

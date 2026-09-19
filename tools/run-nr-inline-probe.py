@@ -17,7 +17,7 @@ p.add_argument('--proton',type=Path,default=Path('/opt/Proton-11.0-2c-Zen5-BP18-
 p.add_argument('--validation',action='store_true')
 p.add_argument('--bridge',action='store_true')
 p.add_argument('--inline',action='store_true',help='Exercise the application-local Vulkan shim and Color overlay')
-p.add_argument('--case',choices=['active','launcher','disabled','missing-dll','bda-auto','real-sr'],default='active')
+p.add_argument('--case',choices=['active','launcher','disabled','missing-dll','bda-auto','real-sr','bootstrap-forward','bootstrap-track','bootstrap-bda','bootstrap-wsi'],default='active')
 a=p.parse_args()
 repo=Path(__file__).resolve().parents[1]
 out=repo/'build/nr-inline'
@@ -36,6 +36,8 @@ env.update(STEAM_COMPAT_CLIENT_INSTALL_PATH=str(steam),STEAM_COMPAT_DATA_PATH=st
 if a.validation:
     env.update(VK_LAYER_PATH=str(repo/'build/fg/validation/root/usr/share/vulkan/explicit_layer.d'),
                VK_INSTANCE_LAYERS='VK_LAYER_KHRONOS_validation',DLSSFG_VALIDATE='1')
+env.pop('DLSSNR_BOOTSTRAP',None)
+env.pop('DLSSNR_BOOTSTRAP_DIR',None)
 if a.bridge: env['DLSSNR_PROBE_BRIDGE']='1'
 else: env.pop('DLSSNR_PROBE_BRIDGE',None)
 cmd=[str(steam/'steamapps/common/SteamLinuxRuntime_4/_v2-entry-point'),'--verb=run','--',
@@ -43,16 +45,18 @@ cmd=[str(steam/'steamapps/common/SteamLinuxRuntime_4/_v2-entry-point'),'--verb=r
 if a.inline:
     if not a.validation: p.error('--inline requires --validation')
     exe=run/('Launcher.exe' if a.case=='launcher' else 'RDR2.exe')
-    shutil.copy2(out/'nr_inline_probe.exe',exe)
+    shutil.copy2(out/('nr_bootstrap_wsi.exe' if a.case=='bootstrap-wsi' else 'nr_inline_probe.exe'),exe)
     shutil.copy2(out/'vulkan-1.dll',run/'vulkan-1.dll')
     env.update(DLSSNR_INLINE='1',WINEDLLOVERRIDES='vulkan-1=n,b')
     if a.case=='disabled':env['DLSSNR_INLINE']='0'
     if a.case=='missing-dll':env['DLSSNR_BIN_DIR']='Z:'+str(ascii_run/'missing')
-    if a.case=='bda-auto':env['DLSSNR_PROBE_BDA_AUTO']='1'
+    if a.case.startswith('bootstrap-'):
+        env.update(DLSSNR_BOOTSTRAP=('forward' if a.case=='bootstrap-wsi' else a.case.removeprefix('bootstrap-')),DLSSNR_BOOTSTRAP_DIR='Z:'+str(ascii_run))
+    if a.case=='bda-auto' or a.case.startswith('bootstrap-'):env['DLSSNR_PROBE_BDA_AUTO']='1'
     else:env.pop('DLSSNR_PROBE_BDA_AUTO',None)
     if a.case=='real-sr':env['DLSSNR_PROBE_REAL_SR']='Z:'+str(steam/'steamapps/common/Red Dead Redemption 2/nvngx_dlss.dll')
     else:env.pop('DLSSNR_PROBE_REAL_SR',None)
-    if a.case in ('launcher','disabled','missing-dll'):env['DLSSNR_EXPECT_BYPASS']='1'
+    if a.case in ('launcher','disabled','missing-dll') or a.case.startswith('bootstrap-'):env['DLSSNR_EXPECT_BYPASS']='1'
     else:env.pop('DLSSNR_EXPECT_BYPASS',None)
     cmd[-1]=str(exe)
 with (run/'runner.log').open('w') as output:
@@ -64,6 +68,7 @@ with (run/'runner.log').open('w') as output:
         except subprocess.TimeoutExpired: os.killpg(proc.pid,signal.SIGKILL); proc.wait()
         code=124
 if (ascii_run/'nr.log').exists(): shutil.copy2(ascii_run/'nr.log',run/'nr.log')
+for trace in ascii_run.glob('bootstrap-*.log'): shutil.copy2(trace,run/trace.name)
 with (a.binaries/'nvngx_dlssnr.dll').open('rb') as stream:
     sha=hashlib.file_digest(stream,'sha256').hexdigest()
 record=dict(exit_code=code,passed=code==0,validation=a.validation,bridge=a.bridge,inline=a.inline,case=a.case,dll_sha256=sha)
