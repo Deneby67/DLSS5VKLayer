@@ -6,6 +6,7 @@ gui_sources = files(
   'main.cpp',
   'mainwindow.cpp',
   'inline_nr_panel.cpp',
+  'dlss_sr_panel.cpp',
   'passdialog.cpp',
   'shm_binder.cpp',
   '../layer_linux/src/hotkey.cpp',

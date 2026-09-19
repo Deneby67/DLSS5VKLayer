@@ -24,7 +24,7 @@ else:
 backup=home/'.local/share/dlssnr/backups'/('inline-gui-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 backup.mkdir(parents=True,mode=0o700);base.mkdir(parents=True,exist_ok=True)
 (backup/'new-wrapper').write_text(new);(backup/'new-wrapper').chmod(0o755)
-sources={executable:repo/'build/gui-native/dlssnr_gui',controller:repo/'tools/control-nr-inline.py',wrapper:backup/'new-wrapper'}
+sources={base/'dlssnr-sr-control':repo/'tools/control-dlss-sr.py',executable:repo/'build/gui-native/dlssnr_gui',controller:repo/'tools/control-nr-inline.py',wrapper:backup/'new-wrapper'}
 def sha(path):
     with path.open('rb') as f:return hashlib.file_digest(f,'sha256').hexdigest()
 changes=[]

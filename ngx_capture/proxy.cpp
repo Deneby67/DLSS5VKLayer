@@ -1,5 +1,6 @@
 // RDR2-only NGX observations. Validated pointer redirection; no code-byte patches or GPU work.
 #include "params.h"
+#include "sr_preset.h"
 #include "dispatch.h"
 #include <atomic>
 #include <map>
@@ -20,6 +21,20 @@ wchar_t directory[32768]{};
 HANDLE logFile = INVALID_HANDLE_VALUE;
 bool logInitialized = false;
 bool nrRequested = false;
+unsigned srPreset=0;
+wchar_t srStatus[32768]{};
+void SrStatus(unsigned requested,unsigned reads,Result result) {
+    if(!srStatus[0])return;
+    Json status={{"schema",1},{"pid",GetCurrentProcessId()},{"preset",requested},
+        {"preset_reads",reads},{"result",result},{"tick_ms",GetTickCount64()}};
+    auto data=status.dump()+"\n";
+    std::wstring temporary=std::wstring(srStatus)+L".tmp";
+    HANDLE file=CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE)return;
+    DWORD count=0;bool ok=WriteFile(file,data.data(),DWORD(data.size()),&count,nullptr) && count==data.size();
+    CloseHandle(file);
+    if(!ok || !MoveFileExW(temporary.c_str(),srStatus,MOVEFILE_REPLACE_EXISTING))DeleteFileW(temporary.c_str());
+}
 uint64_t bytes = 0, calls = 0, generation = 0;
 uint64_t lastRequest = 0, request = 0, remaining = 0, deadline = 0, nextPoll = 0;
 struct Feature { uint64_t generation; int id; };
@@ -75,7 +90,7 @@ template<class F> void Diagnostic(F&& fn) noexcept {
     try { fn(); } catch (...) { /* Diagnostic failure must not replace the real NGX call. */ }
     SetLastError(error);
 }
-void Created(unsigned provider, void* cmd, int id, void* params, void** out, Result result, const Json& before) {
+void Created(unsigned provider, void* cmd, int id, void* params, void** out, Result result, const Json& before,unsigned preset,unsigned reads) {
     void* handle = nullptr;
     if (result == Success) Read(out, &handle, sizeof(handle));
     Lock lock(logLock);
@@ -83,24 +98,29 @@ void Created(unsigned provider, void* cmd, int id, void* params, void** out, Res
     if (handle && features.size() < 4096) {
         gen = ++generation; features[{provider, Ptr(handle)}] = {gen, id};
     }
+    if(id==1 && nrRequested)SrStatus(preset,reads,result);
     Write({{"event", "create"}, {"provider", provider}, {"feature", id}, {"result", result},
         {"command_buffer", Ptr(cmd)}, {"handle", Ptr(handle)}, {"handle_generation", gen},
-        {"parameters", Ptr(params)}, {"before", before}});
+        {"parameters", Ptr(params)}, {"before", before}, {"sr_preset",preset},{"sr_preset_reads",reads}});
 }
 template<unsigned P> Result __cdecl CreateHook(void* cmd, int id, void* params, void** out) {
     auto fn = reinterpret_cast<Create>(providers[P].fn[0].load());
     Json before;
     Diagnostic([&] { before = Snapshot(params); });
-    auto result = fn(cmd, id, params, out);
-    Diagnostic([&] { Created(P, cmd, id, params, out, result, before); });
+    const unsigned selected=id==1 && nrRequested?srPreset:0;
+    SrPresetOverlay overlay(params,selected);
+    auto result = fn(cmd, id, selected?&overlay:params, out);
+    Diagnostic([&] { Created(P, cmd, id, params, out, result, before,selected,overlay.reads); });
     return result;
 }
 template<unsigned P> Result __cdecl Create1Hook(void* device, void* cmd, int id, void* params, void** out) {
     auto fn = reinterpret_cast<Create1>(providers[P].fn[1].load());
     Json before;
     Diagnostic([&] { before = Snapshot(params); });
-    auto result = fn(device, cmd, id, params, out);
-    Diagnostic([&] { Created(P, cmd, id, params, out, result, before); });
+    const unsigned selected=id==1 && nrRequested?srPreset:0;
+    SrPresetOverlay overlay(params,selected);
+    auto result = fn(device, cmd, id, selected?&overlay:params, out);
+    Diagnostic([&] { Created(P, cmd, id, params, out, result, before,selected,overlay.reads); });
     return result;
 }
 template<unsigned P> Result __cdecl EvaluateHook(void* cmd, const void* handle, const void* params, void* callback) {
@@ -202,6 +222,13 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
         if (_wcsicmp(base, L"RDR2.exe")) return TRUE;
         wchar_t nrFlag[8]{};
         nrRequested=GetEnvironmentVariableW(L"DLSSNR_INLINE",nrFlag,8)==1 && nrFlag[0]=='1';
+        wchar_t preset[8]{};
+        auto length=GetEnvironmentVariableW(L"DLSSNR_SR_PRESET",preset,8);
+        if(length && length<8) {
+            wchar_t* end=nullptr;auto value=wcstoul(preset,&end,10);
+            if(end==preset+length && SrPresetSupported(value))srPreset=value;
+        }
+        if(GetEnvironmentVariableW(L"DLSSNR_SR_STATUS",srStatus,32768)>=32768)srStatus[0]=0;
         n = GetEnvironmentVariableW(L"DLSSFG_NGX_CAPTURE_DIR", directory, 32768);
         if (!n || n >= 32768 || directory[1] != L':' || (directory[2] != L'/' && directory[2] != L'\\')) return TRUE;
         // The worker does not run under the loader lock and exits after attachment.

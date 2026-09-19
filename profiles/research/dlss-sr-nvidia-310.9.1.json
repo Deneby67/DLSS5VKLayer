@@ -1,0 +1,9 @@
+{
+  "version": "310.9.1.0",
+  "tag": "v310.9.1",
+  "commit": "374959484e79a640feaba44c93ac8cfb0a03f5b5",
+  "url": "https://raw.githubusercontent.com/NVIDIA/DLSS/374959484e79a640feaba44c93ac8cfb0a03f5b5/lib/Windows_x86_64/rel/nvngx_dlss.dll",
+  "sha256": "3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983",
+  "bytes": 58956912,
+  "checked": "2026-09-19"
+}

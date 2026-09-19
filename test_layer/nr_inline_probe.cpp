@@ -7,6 +7,7 @@
 #include <vector>
 #include "../ngx_capture/nr_settings.h"
 #include "../ngx_capture/nr_arm.h"
+#include "../ngx_capture/sr_preset.h"
 using namespace dlssnr;
 constexpr unsigned W=1280,H=720;
 static VkCtx context;
@@ -126,7 +127,15 @@ int main() {
         creation.set("PerfQualityValue",2);creation.set("DLSS.Feature.Create.Flags",43);
         creation.set("CreationNodeMask",1u);creation.set("VisibilityNodeMask",1u);
         if(!BeginCmd(context.cmdCreate))return 10;
-        result=create(context.cmdCreate,1,creation.abi(),&realHandle);
+        const char* presetEnv=getenv("DLSSNR_PROBE_SR_PRESET");
+        unsigned preset=presetEnv?unsigned(atoi(presetEnv)):0;
+        creation.set("DLSS.Hint.Render.Preset.Quality",0u);
+        ngx_capture::SrPresetOverlay selected(creation.abi(),preset);
+        result=create(context.cmdCreate,1,preset?(NVSDK_NGX_Parameter*)&selected:creation.abi(),&realHandle);
+        unsigned unchanged=99;
+        if(ngx_capture::Get(creation.abi(),"DLSS.Hint.Render.Preset.Quality",&unchanged,12)!=1 || unchanged)return 13;
+        if(preset && !selected.reads)return 13;
+        Log("[inline-real-sr] preset=%u reads=%u",preset,selected.reads);
         Log("[inline-real-sr] create -> %#x",unsigned(result));
         if(!SubmitAndWait(context,context.cmdCreate) || result!=1 || !realHandle)return 10;
         // Supply real geometric guidance for this synthetic plane, not game defaults.
@@ -183,6 +192,12 @@ int main() {
         if(settingTest && ((frame==3 || frame==6)?changed!=0:changed<=100))return 12;
         if(armCycle && ((frame==2)?changed<=100:changed!=0))return 11;
         if(armCycle && frame<2 && GetModuleHandleW(L"nvngx_dlssnr.dll"))return 11;
+    }
+    if(realMode) {
+        uint64_t digest=14695981039346656037ull;
+        const auto* bytes=(const unsigned char*)context.readMap;
+        for(size_t i=0;i<size_t(ow)*oh*8;++i){digest^=bytes[i];digest*=1099511628211ull;}
+        Log("[inline-real-sr] output checksum=%016llx",(unsigned long long)digest);
     }
     testSettings.close();
     vkDeviceWaitIdle(context.device);

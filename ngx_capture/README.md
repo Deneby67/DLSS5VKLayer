@@ -182,3 +182,34 @@ gate checks actual modified readback for 130 distinct buffers. The
 `rendering-settings` gate checks create-time changes, reuse, Enabled bypass and
 invalid-settings bypass with Vulkan Validation Layers. These synthetic gates
 are not a sustained RDR2 benchmark or a validation of physical F2 input.
+
+### Classic DLSS Super Resolution controls
+
+The **DLSS SR** tab selects a startup preset independently of NR/F2. Default is
+Transformer K; choices are Transformer J/K/L/M, legacy CNN E/F, or the game's
+own choice. All use official NVIDIA **310.9.1.0**, the latest release checked on
+2026-09-19. E/F are deprecated in this SDK but remain executable; old DLLs are
+not installed to select them. Presets are applied to every performance-quality
+hint at feature creation, through a public NGX parameter overlay. Engine input
+sizes, quality mode, exposure, flags and motion vectors remain authoritative.
+Choose Quality/Balanced/Performance in RDR2, where render targets are allocated.
+
+`~/.config/dlssnr/dlss-sr.json` is separate from NR controls. Save stages changes
+for the next full game launch; there is no in-flight SR recreation. The launcher
+checks the pinned DLL hash and freezes the preset in the game environment. NGX
+reports preset reads and feature-creation result to a private per-launch status
+file; the GUI distinguishes a staged choice from a successfully submitted one.
+The report does not claim to independently inspect NVIDIA's internal network.
+
+The official binary's source commit, URL, version and SHA-256 are recorded in
+`profiles/research/dlss-sr-nvidia-310.9.1.json`. `tools/fetch-dlss-sr.py` verifies the
+release before downloading to ignored `build/` storage. The installer backs up
+the existing game DLL and installs these verified bytes. No NVIDIA binaries are
+committed. Reference: [NVIDIA release](https://github.com/NVIDIA/DLSS/releases/tag/v310.9.1)
+and its [preset definitions](https://github.com/NVIDIA/DLSS/blob/v310.9.1/include/nvsdk_ngx_defs.h).
+
+Validation adds six real SR preset gates using the production DLL and NR on the
+EXT buffer-address path, plus CreateFeature/CreateFeature1 forwarding tests.
+The synthetic scene checks NGX preset reads, unchanged application parameters,
+real image readback and Vulkan Validation. It does not establish visual quality
+or FPS in RDR2 for every preset.

@@ -25,9 +25,11 @@ cases = [('armed', 'RDR2.exe', True, '--armed'),
          ('baseline', 'Launcher.exe', True, '--bench'),
          ('launcher', 'Launcher.exe', True, '--armed'),
          ('disabled', 'RDR2.exe', False, ''),
-         ('real', 'RDR2.exe', True, '--real')]
+         ('real', 'RDR2.exe', True, '--real'),
+         ('sr-cnn', 'RDR2.exe', True, ''),
+         ('sr-transformer', 'RDR2.exe', True, '')]
 if a.real_only:
-    cases = cases[-1:]
+    cases = [c for c in cases if c[0]=='real']
 results = []
 for name, executable, enabled, argument in cases:
     folder = stamp/name
@@ -42,12 +44,17 @@ for name, executable, enabled, argument in cases:
         shutil.copy2(out/'_nvngx.dll', folder/'_nvngx.dll')
     env = os.environ.copy()
     for key in ['WINEPREFIX', 'LD_PRELOAD', 'PROTON_LOG', 'DLSSFG_DISCOVERY_DIR',
-                'DLSSFG_NGX_CAPTURE_DIR', 'DLSSNR_LAYER_OBJECT', 'VK_INSTANCE_LAYERS', 'VK_LAYER_PATH']:
+                'DLSSFG_NGX_CAPTURE_DIR', 'DLSSNR_LAYER_OBJECT', 'VK_INSTANCE_LAYERS', 'VK_LAYER_PATH',
+                'DLSSNR_SR_PRESET','DLSSNR_SR_STATUS','DLSSNR_TEST_SR_PRESET']:
         env.pop(key, None)
     env.update(STEAM_COMPAT_CLIENT_INSTALL_PATH=str(steam), STEAM_COMPAT_DATA_PATH=str(prefix),
                PROTON_ENABLE_NVAPI='1', WINESTEAMNOEXEC='1', PROTON_ENABLE_WAYLAND='0', WINEDEBUG='-all',
                WINEDLLOVERRIDES='version=n,b', DLSSNR_ENABLE='0', VKLayer_DLSS5='0',
                VK_LOADER_LAYERS_DISABLE='~implicit~', DLSSNR_INLINE='0', DLSSNR_LOG=str(folder/'adapter.log'))
+    if name.startswith('sr-'):
+        value='5' if name=='sr-cnn' else '11'
+        env.update(DLSSNR_INLINE='1',DLSSNR_SR_PRESET=value,DLSSNR_TEST_SR_PRESET=value,
+                   DLSSNR_SR_STATUS='Z:'+str(folder/'sr-status.json'))
     if enabled:
         env['DLSSFG_NGX_CAPTURE_DIR'] = 'Z:' + str(logs)
     cmd = [str(steam/'steamapps/common/SteamLinuxRuntime_4/_v2-entry-point'), '--verb=run', '--',
@@ -85,6 +92,12 @@ for name, executable, enabled, argument in cases:
         assert not before and any(r['event'] == 'intercept' for r in rows), rows
     elif name == 'real':
         assert len([r for r in rows if r['event'] == 'intercept']) == 4, rows
+    elif name.startswith('sr-'):
+        requested=5 if name=='sr-cnn' else 11
+        creates=[row for row in rows if row['event']=='create']
+        assert len(creates)==2 and all(row['result']==1 and row['sr_preset']==requested and row['sr_preset_reads']>=6 for row in creates)
+        active=json.loads((folder/'sr-status.json').read_text())
+        assert active['result']==1 and active['preset']==requested and active['preset_reads']>=6
     elif name in ('disabled', 'launcher', 'baseline'):
         assert not rows, rows
     results.append(dict(case=name, passed=True, idle_evaluate_ns=report.get('idle_evaluate_ns'), log=str(folder/'run.log')))

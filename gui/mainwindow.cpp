@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "inline_nr_panel.h"
+#include "dlss_sr_panel.h"
 
 #include <csignal>
 #include "passdialog.h"
@@ -1319,6 +1320,11 @@ QWidget* MainWindow::buildSettings() {
     }
     auto* inlinePanel=new InlineNrPanel(controller,tabs,true,hdr);
     col->addWidget(inlinePanel);
+    scrollTab("DLSS SR", &col);
+    QString srController=qEnvironmentVariable("DLSSNR_SR_CONTROL");
+    if(srController.isEmpty())srController=QFileInfo(controller).dir().filePath("dlssnr-sr-control");
+    if(!QFile::exists(srController))srController=projectDir+"/tools/control-dlss-sr.py";
+    col->addWidget(new DlssSrPanel(srController,tabs));
     scrollTab("Rendering", &col);
     {
         // Enabling the pass and telling the model what to do are one decision, so they share a

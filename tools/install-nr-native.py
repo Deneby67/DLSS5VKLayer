@@ -36,7 +36,7 @@ for path in sorted((out/'runs').glob('*/result.json')):
     r=json.loads(path.read_text())
     if r.get('inline'):reports[r.get('case')]=(path,r)
 cases=('native-baseline','bootstrap-wsi','bootstrap-forward','bootstrap-track','bootstrap-bda',
-       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr','descriptor-stress','rendering-settings')
+       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr','descriptor-stress','rendering-settings','sr-E','sr-F','sr-J','sr-K','sr-L','sr-M')
 for case in cases:
     require(case in reports,f'Missing native validation gate: {case}')
     path,r=reports[case]
@@ -46,12 +46,15 @@ for case in cases:
             r.get('native_loader_sha256')==NATIVE and r.get('shim_sha256')==expected and
             r.get('probe_sha256')==sha(out/fixture),f'Failed or stale gate: {path}')
     require(r.get('dll_sha256')==sha(home/'.local/share/dlssnr/binaries/nvngx_dlssnr.dll'),'NR model changed since validation')
-    if case in ('real-sr','ext-real-sr'):require(r.get('sr_dll_sha256')==sha(game/'nvngx_dlss.dll'),'Game SR DLL changed')
+    if case in ('real-sr','ext-real-sr') or case.startswith('sr-'):require(r.get('sr_dll_sha256')==sha(game/'nvngx_dlss.dll'),'Game SR DLL changed')
+sr_source=json.loads((repo/'build/dlss-sr/source.json').read_text())
+require(sr_source['sha256']=='3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983','Untested SR release')
+require(sha(repo/'build/dlss-sr/nvngx_dlss.dll')==sr_source['sha256'],'SR download differs from verified NVIDIA release')
 proxy=repo/'build/ngx-capture/version.dll'
 ngx_reports=sorted((repo/'build/ngx-capture/runs').glob('*/result.json'))
 require(bool(ngx_reports),'NGX proxy has not been tested');ngx_report=ngx_reports[-1]
 rows=json.loads(ngx_report.read_text())
-require({r['case'] for r in rows if r.get('passed')}=={'armed','idle','baseline','launcher','disabled','real'},'Incomplete NGX proxy gate')
+require({r['case'] for r in rows if r.get('passed')}=={'armed','idle','baseline','launcher','disabled','real','sr-cnn','sr-transformer'},'Incomplete NGX proxy gate')
 for row in rows:require(sha(ngx_report.parent/row['case']/'version.dll')==sha(proxy),'Untested NGX proxy build')
 require(sha(ngx_report.parent/'real/dlssfg_system_version.dll')==sha(game/'dlssfg_system_version.dll'),'Different forwarded version DLL')
 backup=home/'.local/share/dlssnr/backups'/('native-inline-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
@@ -62,7 +65,7 @@ if config.exists():
     for line in config.read_text().splitlines():
         if line.startswith('shm=') and line[4:].strip():settings_path=Path(line[4:].strip())
 require(settings_path.is_absolute(),'GUI shared-memory path must be absolute')
-plan=dict(settings_path=str(settings_path),mode='native_loader_inline_nr_initially_disarmed',native_loader_sha256=NATIVE,
+plan=dict(sr_source=sr_source,settings_path=str(settings_path),mode='native_loader_inline_nr_initially_disarmed',native_loader_sha256=NATIVE,
     log_root=str(logs),rollback=str(backup/'restore.py'),tests={c:str(reports[c][0]) for c in cases},ngx_test=str(ngx_report))
 if a.dry_run:print(json.dumps(plan,indent=2));raise SystemExit(0)
 backup.mkdir(parents=True,mode=0o700);logs.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -77,9 +80,9 @@ script='\n'.join(['#!/usr/bin/env bash','set -euo pipefail',
     'export DLSSNR_INLINE_SHM='+shlex.quote('Z:'+str(settings_path)),
     'export DLSSNR_BIN_DIR='+shlex.quote('Z:'+str(home/'.local/share/dlssnr/binaries')),
     'export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}vulkan-1=n;dlssnr_system_vulkan=n;version=n,b"',
-    'exec '+shlex.quote(str(backup/'run-base'))+' "$@"',''])
+    'exec python3 '+shlex.quote(str(home/'.local/lib/dlssnr-fg/bin/dlssnr-sr-control'))+' launch -- '+shlex.quote(str(backup/'run-base'))+' "$@"',''])
 (backup/'new-wrapper').write_text(script);(backup/'new-wrapper').chmod(0o755)
-sources={game/'version.dll':proxy,game/'vulkan-1.dll':out/'vulkan-1.dll',
+sources={game/'nvngx_dlss.dll':repo/'build/dlss-sr/nvngx_dlss.dll',game/'version.dll':proxy,game/'vulkan-1.dll':out/'vulkan-1.dll',
          game/'dlssnr_system_vulkan.dll':out/'dlssnr_system_vulkan.dll',wrapper:backup/'new-wrapper'}
 changes=[]
 for i,(dest,src) in enumerate(sources.items()):

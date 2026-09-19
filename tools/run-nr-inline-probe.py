@@ -17,7 +17,7 @@ p.add_argument('--proton',type=Path,default=Path('/opt/Proton-11.0-2c-Zen5-BP18-
 p.add_argument('--validation',action='store_true')
 p.add_argument('--bridge',action='store_true')
 p.add_argument('--inline',action='store_true',help='Exercise the application-local Vulkan shim and Color overlay')
-p.add_argument('--case',choices=['active','launcher','disabled','missing-dll','bda-auto','real-sr','bootstrap-forward','bootstrap-track','bootstrap-bda','bootstrap-wsi','native-baseline','armed-cycle','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr','descriptor-stress','rendering-settings'],default='active')
+p.add_argument('--case',choices=['active','launcher','disabled','missing-dll','bda-auto','real-sr','bootstrap-forward','bootstrap-track','bootstrap-bda','bootstrap-wsi','native-baseline','armed-cycle','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr','descriptor-stress','rendering-settings','sr-E','sr-F','sr-J','sr-K','sr-L','sr-M'],default='active')
 a=p.parse_args()
 repo=Path(__file__).resolve().parents[1]
 out=repo/'build/nr-inline'
@@ -39,7 +39,7 @@ if a.validation:
 env.pop('DLSSNR_PROBE_GROUPS',None)
 env.pop('DLSSNR_PROBE_EXT_BDA',None)
 env.pop('DLSSNR_ARM_FILE',None)
-for name in ('DLSSNR_INLINE_SHM','DLSSNR_PROBE_STRESS','DLSSNR_PROBE_SETTINGS'):env.pop(name,None)
+for name in ('DLSSNR_INLINE_SHM','DLSSNR_PROBE_STRESS','DLSSNR_PROBE_SETTINGS','DLSSNR_PROBE_SR_PRESET'):env.pop(name,None)
 env.pop('DLSSNR_PROBE_ARM_CYCLE',None)
 env.pop('DLSSNR_BOOTSTRAP',None)
 env.pop('DLSSNR_BOOTSTRAP_DIR',None)
@@ -61,11 +61,12 @@ if a.inline:
     if a.case=='missing-dll':env['DLSSNR_BIN_DIR']='Z:'+str(ascii_run/'missing')
     if a.case.startswith('bootstrap-'):
         env.update(DLSSNR_BOOTSTRAP=('forward' if a.case in ('bootstrap-wsi','native-baseline') else a.case.removeprefix('bootstrap-')),DLSSNR_BOOTSTRAP_DIR='Z:'+str(ascii_run))
-    if a.case.startswith(('ext-bda','ext-real-sr')):env.update(DLSSNR_PROBE_EXT_BDA='1',DLSSNR_PROBE_GROUPS='1')
+    if a.case.startswith('sr-'):env['DLSSNR_PROBE_SR_PRESET']=str({'E':5,'F':6,'J':10,'K':11,'L':12,'M':13}[a.case[3:]])
+    if a.case.startswith(('ext-bda','ext-real-sr','sr-')):env.update(DLSSNR_PROBE_EXT_BDA='1',DLSSNR_PROBE_GROUPS='1')
     if a.case.startswith('groups-'):env['DLSSNR_PROBE_GROUPS']='2' if a.case=='groups-khr' else '1'
     if a.case in ('bda-auto','ext-bda-auto') or a.case.startswith(('bootstrap-','groups-')):env['DLSSNR_PROBE_BDA_AUTO']='1'
     else:env.pop('DLSSNR_PROBE_BDA_AUTO',None)
-    if a.case in ('real-sr','ext-real-sr'):env['DLSSNR_PROBE_REAL_SR']='Z:'+str(steam/'steamapps/common/Red Dead Redemption 2/nvngx_dlss.dll')
+    if a.case in ('real-sr','ext-real-sr') or a.case.startswith('sr-'):env['DLSSNR_PROBE_REAL_SR']='Z:'+str(steam/'steamapps/common/Red Dead Redemption 2/nvngx_dlss.dll')
     else:env.pop('DLSSNR_PROBE_REAL_SR',None)
     if a.case in ('launcher','disabled','missing-dll') or a.case.startswith('bootstrap-'):env['DLSSNR_EXPECT_BYPASS']='1'
     else:env.pop('DLSSNR_EXPECT_BYPASS',None)
@@ -96,7 +97,7 @@ if a.inline:
     with (run/'dlssnr_system_vulkan.dll').open('rb') as stream: record['native_loader_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
     with (run/'vulkan-1.dll').open('rb') as stream: record['shim_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
     with exe.open('rb') as stream: record['probe_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
-    if a.case in ('real-sr','ext-real-sr'):
+    if a.case in ('real-sr','ext-real-sr') or a.case.startswith('sr-'):
         with (steam/'steamapps/common/Red Dead Redemption 2/nvngx_dlss.dll').open('rb') as stream:
             record['sr_dll_sha256']=hashlib.file_digest(stream,'sha256').hexdigest()
 (run/'result.json').write_text(json.dumps(record,indent=2)+'\n')

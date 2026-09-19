@@ -60,6 +60,8 @@ int main(int argc, char** argv) {
     Set<float>(p, "MV.Scale.X", 1.f, 6); Set<float>(p, "MV.Scale.Y", -1.f, 6);
     Set<void*>(p, "Color", &color, 0); Set<void*>(p, "Depth", &depth, 0);
     Set<void*>(p, "MotionVectors", &motion, 0); Set<void*>(p, "Output", &output, 0);
+    const char* presetKey="DLSS.Hint.Render.Preset.Quality";
+    Set<unsigned>(p,presetKey,0,4);
     auto before = Snapshot(p);
     ColorOverlay overlay(p,&output);
     auto overlaid=Snapshot(&overlay);
@@ -104,6 +106,7 @@ int main(int argc, char** argv) {
     CHECK(Function<unsigned(*)()>(module, "TestCalls")() == 2);
     CHECK(Function<unsigned(*)()>(module, "TestCallbacks")() == 1);
     CHECK(Snapshot(p) == before); // The observer may Get, never Set/Reset.
+    unsigned originalPreset=99;CHECK(Get(p,presetKey,&originalPreset,12)==1 && originalPreset==0);
     double ns = 0;
     if (argc > 1 && !strcmp(argv[1], "--bench")) {
         LARGE_INTEGER start, end, frequency;
