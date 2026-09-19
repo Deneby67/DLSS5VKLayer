@@ -12,6 +12,7 @@ import tempfile
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--game', type=Path, default=Path.home()/'.steam/debian-installation/steamapps/common/Red Dead Redemption 2')
 p.add_argument('--proton', type=Path, default=Path('/opt/Proton-11.0-2c-Zen5-BP18-Mimalloc'))
+p.add_argument('--inline-nr', action='store_true', help='Install the tested experimental NR-before-SR Vulkan shim')
 a = p.parse_args()
 repo = Path(__file__).resolve().parents[1]
 home = Path.home()
@@ -24,6 +25,11 @@ record = home/'.config/dlssnr/ngx-install.json'
 logs = home/'.local/state/dlssnr/ngx'
 game_proxy = a.game/'version.dll'
 game_original = a.game/'dlssfg_system_version.dll'
+nr_marker = home/'.config/dlssnr/nr-inline.enabled'
+nr_shim = repo/'build/nr-inline/vulkan-1.dll'
+game_shim = a.game/'vulkan-1.dll'
+if nr_marker.exists() and not a.inline_nr:
+    p.error('Inline NR is selected; use --inline-nr or restore its installation first')
 for source in [proxy, original, wrapper, a.game/'RDR2.exe']:
     if not source.is_file(): p.error(f'Missing required file: {source}')
 def digest(path):
@@ -40,14 +46,32 @@ for case in tests:
 if digest(tested.parent/'real/dlssfg_system_version.dll') != digest(original):
     p.error('Selected Proton version.dll differs from the tested one')
 old_record = json.loads(record.read_text()) if record.exists() else {}
-for path in [game_proxy, game_original]:
+nr_reports = {}
+if a.inline_nr:
+    if digest(a.game/'RDR2.exe') != 'b56c9548f670654a9b73bf25def3cd73af12e269f6e47dba28a34079adaf465e':
+        p.error('RDR2 executable differs from the researched version')
+    binary=home/'.local/share/dlssnr/binaries/nvngx_dlssnr.dll'
+    for report in sorted((repo/'build/nr-inline/runs').glob('*/result.json')):
+        result=json.loads(report.read_text())
+        if result.get('inline'):
+            nr_reports[result.get('case','active')]=(report,result)
+    for case in ('active','launcher','disabled','missing-dll','bda-auto','real-sr'):
+        if case not in nr_reports: p.error(f'Missing inline NR validation case: {case}')
+        report,result=nr_reports[case]
+        if not result.get('passed') or not result.get('validation') or result.get('shim_sha256')!=digest(nr_shim) or result.get('dll_sha256')!=digest(binary):
+            p.error(f'Inline NR test is failing or stale: {report}')
+        if result.get('probe_sha256')!=digest(repo/'build/nr-inline/nr_inline_probe.exe'):
+            p.error(f'Inline NR fixture differs from tested executable: {report}')
+        if case=='real-sr' and result.get('sr_dll_sha256')!=digest(a.game/'nvngx_dlss.dll'):
+            p.error('The game SR DLL differs from the validated NR -> SR chain')
+for path in [game_proxy, game_original]+([game_shim] if a.inline_nr else []):
     if path.is_symlink(): p.error(f'Refusing to replace symlink: {path}')
     if path.exists() and old_record.get('installed_hashes', {}).get(str(path)) != digest(path):
         p.error(f'Existing unrecognized DLL must be preserved: {path}')
 backup = home/'.local/share/dlssnr/backups'/('ngx-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
 backup.mkdir(parents=True, mode=0o700)
 changes = []
-for i, path in enumerate([game_proxy, game_original, wrapper, marker, discovery, record]):
+for i, path in enumerate([game_proxy, game_original, wrapper, marker, discovery, record]+([game_shim,nr_marker] if a.inline_nr else [])):
     saved = backup/str(i)
     if path.exists(): shutil.copy2(path, saved)
     changes.append(dict(destination=str(path), backup=str(saved) if saved.exists() else None))
@@ -78,14 +102,19 @@ logs.mkdir(parents=True, exist_ok=True, mode=0o700)
 logs.chmod(0o700)
 install(original, game_original)
 install(proxy, game_proxy)
+if a.inline_nr:
+    install(nr_shim,game_shim)
+    nr_marker.write_text('Experimental RDR2 NR -> SR. No FG. Disable with DLSSNR_INLINE=0.\n')
 install(repo/'tools/steam-fg-capture.sh', wrapper)
 wrapper.chmod(0o755)
 discovery.unlink(missing_ok=True)
 marker.write_text('RDR2-only NGX observations. Per-frame snapshots require an explicit bounded request.\n')
-hashes = {str(path): digest(path) for path in [game_proxy, game_original, wrapper]}
+hashes = {str(path): digest(path) for path in [game_proxy, game_original, wrapper]+([game_shim] if a.inline_nr else [])}
 record.write_text(json.dumps(dict(installed_hashes=hashes, game=str(a.game), proton=str(a.proton),
-                                 pipeline_order=['NR', 'SR', 'FG'], mode='observe_only',
+                                 pipeline_order=['NR', 'SR'] if a.inline_nr else ['SR'],
+                                 mode='nr_before_sr_experimental' if a.inline_nr else 'observe_only',
+                                 nr_tests={k:str(v[0]) for k,v in nr_reports.items()},
                                  test_report=str(tested),
                                  rollback=str(backup/'restore.py')), indent=2)+'\n')
 print(json.dumps(dict(installed_hashes=hashes, logs=str(logs), rollback=str(backup/'restore.py'),
-                     note='Next launch only. No game resources changed; old draw discovery disabled.'), indent=2))
+                     note='Next launch only. Old draw discovery disabled; presentation NR disabled when inline NR is selected.'), indent=2))

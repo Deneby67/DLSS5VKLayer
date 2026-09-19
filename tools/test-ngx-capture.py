@@ -47,7 +47,7 @@ for name, executable, enabled, argument in cases:
     env.update(STEAM_COMPAT_CLIENT_INSTALL_PATH=str(steam), STEAM_COMPAT_DATA_PATH=str(prefix),
                PROTON_ENABLE_NVAPI='1', WINESTEAMNOEXEC='1', PROTON_ENABLE_WAYLAND='0', WINEDEBUG='-all',
                WINEDLLOVERRIDES='version=n,b', DLSSNR_ENABLE='0', VKLayer_DLSS5='0',
-               VK_LOADER_LAYERS_DISABLE='~implicit~', DLSSNR_LOG=str(folder/'adapter.log'))
+               VK_LOADER_LAYERS_DISABLE='~implicit~', DLSSNR_INLINE='0', DLSSNR_LOG=str(folder/'adapter.log'))
     if enabled:
         env['DLSSFG_NGX_CAPTURE_DIR'] = 'Z:' + str(logs)
     cmd = [str(steam/'steamapps/common/SteamLinuxRuntime_4/_v2-entry-point'), '--verb=run', '--',

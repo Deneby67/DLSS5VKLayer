@@ -8,6 +8,16 @@ if (( $# == 0 )); then
   echo 'Use this script before %command% in the RDR2 Steam launch options.' >&2
   exit 2
 fi
+# Experimental RDR2 NR-before-SR path. The native shim independently excludes
+# launcher processes. Disable presentation-time NR to avoid processing twice.
+if [[ "${DLSSNR_INLINE:-auto}" == 1 ]] ||
+   [[ "${DLSSNR_INLINE:-auto}" == auto && -f "$HOME/.config/dlssnr/nr-inline.enabled" ]]; then
+  export DLSSNR_INLINE=1 DLSSFG_NGX_CAPTURE=1 DLSSNR_SKIP_NVAPI=1
+  export DLSSNR_BIN_DIR="Z:$HOME/.local/share/dlssnr/binaries"
+  export DLSSNR_LOG="Z:$HOME/.local/state/dlssnr/nr-inline.log"
+  export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}vulkan-1=n,b"
+  export VKLayer_DLSS5=0 DLSSNR_ENABLE=0
+fi
 # NGX observations are scoped to RDR2 again inside the PE proxy. Keep the old
 # always-on draw tracker out of this path; it caused a major gameplay slowdown.
 if [[ "${DLSSFG_NGX_CAPTURE:-auto}" == 1 ]] ||

@@ -1,11 +1,10 @@
 # RDR2 NGX observer
 
-This is a diagnostic **observer**, not an implemented NR/SR/FG chain. The target
-processing order is **DLSS 5 NR → the game's DLSS SR → FG ×2**. Preserve original
-color for optical-flow fallback; prefer the game's depth and motion inputs.
-NR must preserve the SR input's color/exposure contract. An SDR display does not
-imply that the pre-SR color is SDR. FG still needs correct camera data, final
-composition, resource lifetime/synchronization and paced presentation.
+By default this is a diagnostic **observer**. The active experiment now adds
+**DLSS 5 NR → the game's DLSS SR** through an explicitly selected Vulkan shim;
+see [NR-BEFORE-SR.md](NR-BEFORE-SR.md). FG is deferred. The new path has isolated
+GPU validation, including the game's actual SR DLL, but awaits scene validation
+inside RDR2. An SDR display does not imply that the pre-SR color is SDR.
 
 The application-local `version.dll` forwards all 16 exports to a local copy of
 the selected Proton's original version library, `dlssfg_system_version.dll`.
@@ -27,6 +26,11 @@ that lifetime. Every wrapper forwards original arguments exactly once, outside
 diagnostic exception guards and locks. Callback pointers, return values and
 LastError are preserved. Direct calls to `_nvngx.dll` or feature DLLs bypassing
 the outer loader are outside this diagnostic subset.
+
+When inline NR is explicitly enabled, a known SR evaluation is delegated to the
+tested shim, which forwards SR with a Color-only overlay after recording NR.
+The default observer tests still require unchanged pointers and parameters;
+separate GPU gates validate the opt-in replacement and bypass behavior.
 
 A feature created before attachment has an unknown feature ID/generation. Its
 evaluation can still be observed, but is not labelled as verified SR. No feature
@@ -96,9 +100,10 @@ python3 tools/request-ngx-capture.py ~/.local/state/dlssnr/ngx/ngx-WINDOWS_PID-T
 Logs appear below `~/.local/state/dlssnr/ngx/`, with one process-specific control
 file. Select the current log; the request tool verifies that a live RDR2 process
 holds it open. Windows process IDs in logs differ from Linux `/proc` IDs.
-The requested order NR → SR → FG is recorded as intent; `mode=observe_only`
-means no processing stage has been inserted. The existing NR helper remains on
-its previous presentation path until the new in-game chain is implemented.
+`mode=observe_only` means no processing stage has been inserted. Opt-in inline
+NR records `mode=nr_before_sr_requested`; the separate NR journal reports whether
+replacement was actually recorded or why it was bypassed. The original helper
+keeps its previous presentation path unless inline NR is selected by the wrapper.
 
 ## Verified RDR2 scene
 

@@ -1,4 +1,5 @@
 #include "../ngx_capture/params.h"
+#include "../ngx_capture/color_overlay.h"
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
@@ -60,6 +61,12 @@ int main(int argc, char** argv) {
     Set<void*>(p, "Color", &color, 0); Set<void*>(p, "Depth", &depth, 0);
     Set<void*>(p, "MotionVectors", &motion, 0); Set<void*>(p, "Output", &output, 0);
     auto before = Snapshot(p);
+    ColorOverlay overlay(p,&output);
+    auto overlaid=Snapshot(&overlay);
+    CHECK(overlaid["resources"]["Color"]["resource"]["extent"] == Json({1280,720}));
+    CHECK(overlaid["resources"]["MotionVectors"] == before["resources"]["MotionVectors"]);
+    CHECK(overlaid["values"] == before["values"]);
+    CHECK(Snapshot(p) == before);
     CHECK(before["values"]["Width"]["value"] == 640);
     CHECK(before["values"]["Jitter.Offset.X"]["value"] == .25f);
     CHECK(before["resources"]["Color"]["resource"]["image"] == 102);

@@ -19,6 +19,7 @@ SRWLOCK logLock = SRWLOCK_INIT;
 wchar_t directory[32768]{};
 HANDLE logFile = INVALID_HANDLE_VALUE;
 bool logInitialized = false;
+bool nrRequested = false;
 uint64_t bytes = 0, calls = 0, generation = 0;
 uint64_t lastRequest = 0, request = 0, remaining = 0, deadline = 0, nextPoll = 0;
 struct Feature { uint64_t generation; int id; };
@@ -107,10 +108,10 @@ template<unsigned P> Result __cdecl EvaluateHook(void* cmd, const void* handle, 
     uint64_t call = 0, req = 0, gen = 0; int feature = -1;
     Diagnostic([&] {
         Lock lock(logLock); Poll();
-        if (!remaining || logFile == INVALID_HANDLE_VALUE) return;
-        --remaining; call = ++calls; req = request;
         auto it = features.find({P, Ptr(handle)});
         if (it != features.end()) { gen = it->second.generation; feature = it->second.id; }
+        if (!remaining || logFile == INVALID_HANDLE_VALUE) return;
+        --remaining; call = ++calls; req = request;
     });
     if (call) Diagnostic([&] {
         auto before = Snapshot(params);
@@ -118,11 +119,17 @@ template<unsigned P> Result __cdecl EvaluateHook(void* cmd, const void* handle, 
         Write({{"event", "evaluate_before"}, {"call", call}, {"request", req}, {"provider", P},
             {"feature", feature}, {"handle_generation", gen}, {"handle", Ptr(handle)},
             {"command_buffer", Ptr(cmd)}, {"parameters", Ptr(params)}, {"callback", Ptr(callback)},
-            {"before", before}, {"pipeline_order", {"NR", "SR", "FG"}},
-            {"mode", "observe_only"}});
+            {"before", before}, {"pipeline_order", nrRequested?Json({"NR","SR"}):Json({"SR"})},
+            {"mode", nrRequested?"nr_before_sr_requested":"observe_only"}});
     });
     // Exactly one unchanged real call, outside all diagnostic exception guards/locks.
-    auto result = fn(cmd, handle, params, callback);
+    using Inline = Result(__cdecl*)(void*,const void*,const void*,void*,Evaluate);
+    Inline inlineNr=nullptr;
+    if(feature==1 && nrRequested) Diagnostic([&] {
+            auto module=GetModuleHandleW(L"vulkan-1.dll");
+            if(module) inlineNr=(Inline)GetProcAddress(module,"DlssNrEvaluate");
+    });
+    auto result = inlineNr ? inlineNr(cmd,handle,params,callback,fn) : fn(cmd, handle, params, callback);
     if (call) Diagnostic([&] {
         Lock lock(logLock);
         Write({{"event", "evaluate_after"}, {"call", call}, {"request", req}, {"result", result},
@@ -193,6 +200,8 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
         if (!n || n >= 32768) return TRUE;
         const wchar_t* base = wcsrchr(executable, L'\\'); base = base ? base+1 : executable;
         if (_wcsicmp(base, L"RDR2.exe")) return TRUE;
+        wchar_t nrFlag[8]{};
+        nrRequested=GetEnvironmentVariableW(L"DLSSNR_INLINE",nrFlag,8)==1 && nrFlag[0]=='1';
         n = GetEnvironmentVariableW(L"DLSSFG_NGX_CAPTURE_DIR", directory, 32768);
         if (!n || n >= 32768 || directory[1] != L':' || (directory[2] != L'/' && directory[2] != L'\\')) return TRUE;
         // The worker does not run under the loader lock and exits after attachment.

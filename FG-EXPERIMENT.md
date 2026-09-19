@@ -4,11 +4,12 @@ This branch is an **experimental backend and profile foundation**, not working
 in-game frame generation. NR and the Rockstar Social Club renderer exclusion
 remain available. No NVIDIA binaries are included in the repository.
 
-The intended game pipeline is now **DLSS 5 NR → the game's DLSS SR → FG ×2**.
-Original input color remains the source for optical-flow fallback. The new
-[RDR2 NGX observer](ngx_capture/README.md) is implemented and tested independently;
-it does not yet execute this processing chain. The previous continuously tracked
-draw-discovery path is disabled for normal gameplay after a reported FPS regression.
+**Current scope: FG is deferred at the user's request.** Active development is
+[DLSS 5 NR → the game's DLSS SR](ngx_capture/NR-BEFORE-SR.md). This opt-in chain
+has passed isolated GPU validation with the actual RDR2 SR DLL and is installed
+for the next game launch; in-game scene verification remains pending. The FG
+research below is retained for reference. The expensive draw-discovery path
+remains disabled.
 
 ## Verified gate
 
