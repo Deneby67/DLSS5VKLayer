@@ -5,6 +5,7 @@ gui_inc = include_directories('../common', '../layer_linux/src')
 gui_sources = files(
   'main.cpp',
   'mainwindow.cpp',
+  'inline_nr_panel.cpp',
   'passdialog.cpp',
   'shm_binder.cpp',
   '../layer_linux/src/hotkey.cpp',

@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "inline_nr_panel.h"
 
 #include <csignal>
 #include "passdialog.h"
@@ -1307,6 +1308,16 @@ QWidget* MainWindow::buildSettings() {
     };
 
     QVBoxLayout* col = nullptr;
+    scrollTab("Before DLSS", &col);
+    QString controller=qEnvironmentVariable("DLSSNR_INLINE_CONTROL");
+    if(controller.isEmpty()) {
+        for(const QString& path : {QDir::homePath()+"/.local/lib/dlssnr-fg/bin/dlssnr-inline-control",
+                                    QDir::homePath()+"/.local/lib/dlssnr/bin/dlssnr-inline-control",
+                                    QString("/usr/lib/dlssnr/bin/dlssnr-inline-control"),
+                                    projectDir+"/tools/control-nr-inline.py"})
+            if(QFile::exists(path)){controller=path;break;}
+    }
+    col->addWidget(new InlineNrPanel(controller,tabs));
     scrollTab("Rendering", &col);
     {
         // Enabling the pass and telling the model what to do are one decision, so they share a

@@ -9,12 +9,14 @@ SOURCES += \
     ../layer_linux/src/hotkey.cpp \
     main.cpp \
     mainwindow.cpp \
+    inline_nr_panel.cpp \
     passdialog.cpp \
     shm_binder.cpp \
     ../common/runner_discovery.cpp
 
 HEADERS += \
     mainwindow.h \
+    inline_nr_panel.h \
     passdialog.h \
     shm_binder.h \
     ../common/runner_discovery.h

@@ -312,3 +312,30 @@ presentation NR and inline NR remain disabled. NR-before-SR gameplay is still
 unimplemented as a validated working integration. The diagnostic record's old
 `builtin_vulkan...` label describes the intended override, **not the observed
 runtime loader**, and must not be used as evidence of builtin Vulkan loading.
+
+## GUI control
+
+The **Before DLSS** tab in DLSS5VKLayer Helper discovers the single live RDR2
+session and offers an NR toggle and its adapter log. It uses the same
+`tools/control-nr-inline.py` backend as the CLI: `auto status` is read-only;
+mutations require an explicit live log and the GUI supplies the expected token.
+It verifies process identity, environment, open log inode and the installed DLL
+mappings. An older mapped DLL requires a game restart. A terminated or ambiguous
+session cannot be armed. The panel distinguishes a pending request, bypass,
+terminal failure and recorded commands; it does not infer GPU completion or FPS.
+Closing the GUI preserves the current request. New game sessions start off.
+The existing runner, profiles and other tabs continue to configure the external
+helper; they do not change inline NR tuning.
+
+For this local deployment, `tools/build-inline-gui.py` uses the patched Clang
+and at most 24 workers. It expects extracted Qt development packages under
+`build/gui-native/qt` (or `DLSSNR_QT_DEV_ROOT`) and XInput headers in the existing
+local dependency tree. Normal Meson and qmake builds also include the panel.
+`tools/install-inline-gui.py` backs up the GUI launcher and installs the GUI and
+controller in `~/.local/lib/dlssnr-fg/bin`, leaving the system GUI and game DLLs
+unchanged. Its printed restore script provides exact rollback.
+
+Verification covers the Qt panel's asynchronous command transport, on/off and
+restart states, existing shared-memory bindings, and controller cases including
+stale/dead/ambiguous sessions, stale DLL mappings, rejected tokens and turning
+off after a terminal failure or oversized log. None of these tests arms RDR2.

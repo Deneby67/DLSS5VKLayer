@@ -31,6 +31,7 @@ install_file build/windows/windows/dlssnr_helper.exe "$LIBDIR/helper/dlssnr_help
 install_file build/native/tools/runner_probe "$LIBDIR/bin/runner_probe"
 install_file build/native/tools/dlssnr-shmctl "$LIBDIR/bin/dlssnr-shmctl"
 
+install_file tools/control-nr-inline.py "$LIBDIR/bin/dlssnr-inline-control"
 install_file dlssnr-helper "$BINDIR/dlssnr-helper"
 install_file build/native/gui/dlssnr_gui "$BINDIR/dlssnr-gui"
 install_file packaging/dlssnr.desktop "$APP_DIR/dlssnr.desktop"

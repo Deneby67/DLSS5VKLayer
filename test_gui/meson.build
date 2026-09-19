@@ -24,3 +24,11 @@ binder_test = executable('binder_test',
 test('binder_test', binder_test,
   env: ['QT_QPA_PLATFORM=offscreen'],
 )
+
+inline_panel_test = executable('inline_panel_test',
+  'inline_panel_test.cpp', '../gui/inline_nr_panel.cpp',
+  include_directories: test_inc, dependencies: qt6_dep, install: false,
+)
+test('inline_panel_test', inline_panel_test, env: ['QT_QPA_PLATFORM=offscreen'])
+python3 = find_program('python3')
+test('inline_control_test', python3, args: files('inline_control_test.py'))
