@@ -4,6 +4,6 @@
   "enabled": false,
   "executable": "RDR2.exe",
   "optical_flow_fallback": true,
-  "status": "awaiting_capture",
-  "notes": "Enable only after capturing and verifying the game's shaders, depth, motion vectors and camera buffers. No absolute process addresses or guessed resource bindings."
+  "status": "camera_candidates_captured_unverified",
+  "notes": "CPU samples at set 0 bindings 29/31 contain candidate rotation/projection data that respond to manual camera turns. Shader consumption, frame identity, translation conventions, depth and motion are not verified. Keep disabled until those are established; do not use guessed selectors or absolute process addresses."
 }

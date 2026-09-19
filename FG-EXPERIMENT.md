@@ -340,3 +340,44 @@ window is still needed to verify RDR2 camera values and their meaning.
 (default 64). It does not disable the separate camera probe. Real RDR2 snapshots
 still require restarting once with this updated library, then arming a window.
 The helper, NR settings, game profile and FG presentation remain unchanged.
+
+### RDR2 CPU camera windows after the reader fix
+
+Three requested gameplay windows now returned 222, 1,024 and 912 samples,
+respectively. All used the pipe fallback after `process_vm_readv` returned
+EFAULT, and all were associated with successful CPU queue submission returns.
+There were no CPU memory-read failures. These observations still do not establish
+GPU completion, shader consumption or consistent per-frame data.
+
+The 464-byte blocks mix object and view data. Among perspective-shaped blocks,
+the matrix at byte 64 is orthonormal, and byte 192 is its exact transpose.
+Relative rotation spans approximately 0.105 degrees in the requested idle
+window, 78.08 degrees while turning, and 0.317 degrees while walking. The matrix
+at byte 128 implies an aspect ratio of about 2.38889 and vertical field of view
+of 51.282 degrees, consistent with the 3440x1440 display. Its depth coefficients
+change during the turn: a fixed near-plane assumption would be incorrect.
+The vector at byte 256 varies with movement, but its coordinate system and sign
+are unverified. Byte 0 varies across objects, so treating the whole first matrix
+as a world-to-view camera matrix would be incorrect.
+
+Byte offsets 272/336/400 resemble temporal counterparts, but they are not yet
+matched to a known preceding frame. Do not infer motion-vector conventions or
+clip-to-previous-clip matrices from these observations. Exact layout links still
+reference shader hash
+`f41986d573368f56720f8f14139359a3b316652ea6cee2ede5f30506c14e760a`;
+they do not prove that a particular snapshot was consumed by that shader.
+
+Private raw captures and comparison reports remain outside published sources.
+Reproduce the bounded mathematical analysis with:
+
+```sh
+python3 tools/compare-camera.py baseline=/private/baseline.jsonl \
+  turn=/private/turn.jsonl walk=/private/walk.jsonl --output /private/comparison.json
+PYTHONDONTWRITEBYTECODE=1 python3 tools/test-compare-camera.py
+```
+
+The comparison groups by projection shape and checks matrix transpose/rotation
+relations; it never enables a profile. RDR2's profile remains disabled with
+status `camera_candidates_captured_unverified`. Verified shader/draw association,
+camera translation and temporal pairing, plus depth and motion image captures,
+remain necessary before connecting the game to FG.
