@@ -38,8 +38,11 @@ struct NgxSnippet {
     bool ready = false;     // snippet init + CreateFeature(18) succeeded
     bool disabled = false;  // latched failure -> pass-through forever
 
-    // Captured from NVSDK_NGX_VULKAN_GetFeatureRequirements (bit 0 = HDR path).
-    unsigned int featureFlags = 0;
+    bool requirementsKnown = false;
+    unsigned int featureSupport = 0;
+    unsigned int minimumArchitecture = 0;
+    // Kept conservative for the legacy helper gate: the requirements API does
+    // not advertise HDR. Set only after an independently verified HDR contract.
     bool hdrCapable = false;
     // Whether the feature is being built as HDR. The helper sets it before the first create and on
     // every switch; NgxCreatePass rewrites the create flags and the tonemap hint from it, so a

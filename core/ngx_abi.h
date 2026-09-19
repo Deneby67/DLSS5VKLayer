@@ -40,7 +40,7 @@ typedef unsigned int NVSDK_NGX_Version;
 #define NVSDK_NGX_Version_API_14 0x00000014u
 
 struct NVSDK_NGX_Handle;
-struct NVSDK_NGX_FeatureDiscoveryInfo; // opaque; passed as nullptr
+struct NVSDK_NGX_FeatureDiscoveryInfo;
 
 // Canonical NVIDIA Vulkan resource layout (union of image-view / buffer info).
 enum NVSDK_NGX_Resource_VK_Type
@@ -128,7 +128,9 @@ typedef NVSDK_NGX_Result (NVSDK_CONV* PFN_NVSDK_NGX_ProgressCallback)(float prog
 #define FEATURE_DLSSNR 18
 #define DLSSNR_SIGNED_SNIPPET_APPLICATION_ID 0x0876232Cull
 
-// NVSDK_NGX_DLSS_Feature_Flags (public SDK values; "Feature_Flags" create param).
+// Legacy Feature-18 adapter flag numbers, retained for the installed model.
+// These are NOT the public SR SDK flag numbering (e.g. public AutoExposure=0x40).
+// The pinned NR DLL did not query Feature_Flags in the recorded color study.
 enum NVSDK_NGX_DLSS_Feature_Flags {
     NVSDK_NGX_DLSS_Feature_Flags_IsHDR              = 0x1,
     NVSDK_NGX_DLSS_Feature_Flags_DepthInverted      = 0x2,
@@ -157,15 +159,36 @@ typedef NVSDK_NGX_Result (NVSDK_CONV* FnVkGetScratchBufferSize)(
 
 // ---- core (nvngx.dll) Vulkan export signatures ----
 typedef NVSDK_NGX_Result (NVSDK_CONV* FnVkAllocateParameters)(NVSDK_NGX_Parameter** parameters);
-typedef NVSDK_NGX_Result (NVSDK_CONV* FnVkDestroyParameters)(NVSDK_NGX_Parameter* parameters);typedef NVSDK_NGX_Result (NVSDK_CONV* FnVkGetFeatureRequirements)(VkInstance, VkPhysicalDevice, NVSDK_NGX_Parameter*);
+typedef NVSDK_NGX_Result (NVSDK_CONV* FnVkDestroyParameters)(NVSDK_NGX_Parameter* parameters);
 
-struct NVSDK_NGX_SDK_VERSION { unsigned int Major; unsigned int Minor; };
-struct NVSDK_NGX_FeatureRequirements {
-    NVSDK_NGX_SDK_VERSION Version;
-    unsigned int FeatureFlags;
-    unsigned int MinGPUMode;
-    unsigned int InGPUMode;
-    unsigned int MinCSMajorVersion;
-    unsigned int MinCSMinorVersion;
+// Public NVIDIA GetFeatureRequirements ABI (including snippet exports).
+// The support bitfield describes platform requirements; it is NOT a set of
+// DLSS creation flags and provides no HDR color-contract capability bit.
+struct NVSDK_NGX_ProjectIdDescription {
+    const char* ProjectId;
+    unsigned int EngineType;
+    const char* EngineVersion;
 };
-typedef NVSDK_NGX_Result (NVSDK_CONV* FnVkGetFeatureReqs2)(VkInstance, VkPhysicalDevice, NVSDK_NGX_FeatureRequirements*);
+struct NVSDK_NGX_Application_Identifier {
+    unsigned int IdentifierType;
+    union {
+        NVSDK_NGX_ProjectIdDescription ProjectDesc;
+        unsigned long long ApplicationId;
+    } v;
+};
+struct NVSDK_NGX_FeatureDiscoveryInfo {
+    NVSDK_NGX_Version SDKVersion;
+    unsigned int FeatureID;
+    NVSDK_NGX_Application_Identifier Identifier;
+    const wchar_t* ApplicationDataPath;
+    const void* FeatureInfo;
+};
+struct NVSDK_NGX_FeatureRequirement {
+    unsigned int FeatureSupported;
+    unsigned int MinHWArchitecture;
+    char MinOSVersion[255];
+};
+static_assert(sizeof(NVSDK_NGX_FeatureDiscoveryInfo)==56);
+static_assert(sizeof(NVSDK_NGX_FeatureRequirement)==264);
+typedef NVSDK_NGX_Result (NVSDK_CONV* FnVkGetFeatureRequirements)(VkInstance, VkPhysicalDevice,
+    const NVSDK_NGX_FeatureDiscoveryInfo*, NVSDK_NGX_FeatureRequirement*);

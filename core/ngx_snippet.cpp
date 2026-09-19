@@ -61,6 +61,27 @@ static NVSDK_NGX_Result CallShutdownSafely(FnVkShutdown1 fn, VkDevice device, DW
     return Guarded([&] { return fn(device); }, NVSDK_NGX_Result_FAIL_SEH, seh);
 }
 
+static void QueryRequirements(NgxSnippet& s,VkInstance instance,VkPhysicalDevice physical) {
+    auto query=reinterpret_cast<FnVkGetFeatureRequirements>(
+        GetProcAddress(s.snippet,"NVSDK_NGX_VULKAN_GetFeatureRequirements"));
+    if(!query)return;
+    NVSDK_NGX_FeatureDiscoveryInfo discovery{};
+    discovery.SDKVersion=NVSDK_NGX_Version_API_14;
+    discovery.FeatureID=18;
+    discovery.Identifier.IdentifierType=0; // Application_Id, public SDK enum.
+    discovery.Identifier.v.ApplicationId=DLSSNR_SIGNED_SNIPPET_APPLICATION_ID;
+    discovery.ApplicationDataPath=s.binDir.c_str();
+    NVSDK_NGX_FeatureRequirement requirements{};DWORD seh=0;
+    const auto r=Guarded([&]{return query(instance,physical,&discovery,&requirements);},NVSDK_NGX_Result_FAIL_SEH,&seh);
+    s.requirementsKnown=!seh && NVSDK_NGX_SUCCEED(r);
+    if(s.requirementsKnown) {
+        s.featureSupport=requirements.FeatureSupported;
+        s.minimumArchitecture=requirements.MinHWArchitecture;
+    }
+    Log("[reqs] GetFeatureRequirements -> %#x seh=%#x known=%u support=%#x minArchitecture=%#x; HDR capability not reported",
+        unsigned(r),seh,unsigned(s.requirementsKnown),s.featureSupport,s.minimumArchitecture);
+}
+
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
@@ -276,9 +297,9 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
     ps &= ParamSetUI(s.params, "NVSDK_NGX_Parameter_CreationNodeMask", 1u, &seh);
     ps &= ParamSetUI(s.params, "NVSDK_NGX_Parameter_VisibilityNodeMask", 1u, &seh);
 
-    // Create flags: sharpening is applied by the net when the runtime float is
-    // nonzero (see NgxSetSharpness); auto-exposure keeps adaptation state in the
-    // DLL so it survives normal dynamic lighting without host-side resets.
+    // Legacy adapter flags. Their semantics are not a proven NR capability:
+    // the pinned snippet reads Sharpness but did not query Feature_Flags in
+    // the color study. Do not infer auto-exposure/HDR behavior from these bits.
     unsigned int createFlags = NVSDK_NGX_DLSS_Feature_Flags_DoSharpening |
                                NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
     const char* hdrEnv = getenv("DLSSNR_HDR");
@@ -326,35 +347,11 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
         return false;
     }
 
-// Public Vulkan NGX contract: query Feature-18 requirements before create.
-    {
-        auto reqs2 = reinterpret_cast<FnVkGetFeatureReqs2>(
-            GetProcAddress(s.snippet, "NVSDK_NGX_VULKAN_GetFeatureRequirements"));
-        if (reqs2) {
-            DWORD seh2 = 0;
-            NVSDK_NGX_FeatureRequirements fr{};
-            NVSDK_NGX_Result r = Guarded([&] { return reqs2(instance, pd, &fr); },
-                                         NVSDK_NGX_Result_FAIL_SEH, &seh2);
-            Log("[reqs] GetFeatureRequirements -> %#x seh=%#x ver=%u.%u flags=%#x minGPU=%u inGPU=%u cs=%u.%u",
-                (uint32_t)r, seh2, fr.Version.Major, fr.Version.Minor, fr.FeatureFlags,
-                fr.MinGPUMode, fr.InGPUMode, fr.MinCSMajorVersion, fr.MinCSMinorVersion);
-            if (NVSDK_NGX_SUCCEED(r)) {
-                s.featureFlags = fr.FeatureFlags;
-                s.hdrCapable = (fr.FeatureFlags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR) != 0u;
-                s.hdrActive = wantHdr && s.hdrCapable;
-            }
-        }
-    }
-
-    // Tonemapping hint now that the snippet's feature flags are known: SDR by default (the input is
-    // LDR RGBA8); HDR only when both asked for and advertised.
-    {
-        DWORD seh2 = 0;
-        const bool hdrPath = wantHdr && s.hdrCapable;
-        ParamSetUI(s.params, "DLSSNR.Hdr", hdrPath ? 1u : 0u, &seh2);
-        ParamSetUI(s.params, "DLSSNR.SDR", hdrPath ? 0u : 1u, &seh2);
-        Log("[params] tonemap hint: %s (featureFlags=%#x)", hdrPath ? "HDR" : "SDR", s.featureFlags);
-    }
+    QueryRequirements(s,instance,pd);
+    // A supported device says nothing about the feature's color contract.
+    // Preserve the explicitly requested mode; do not infer HDR from support bits.
+    s.hdrActive=wantHdr;
+    Log("[params] requested color contract: %s (HDR support unverified)",wantHdr?"HDR":"SDR");
 
     // Last, so neither the create contract above nor the tonemap hint can overwrite it. Its preset
     // write in particular used to land after everything the caller chose.
@@ -362,17 +359,11 @@ bool NgxLoadAndInit(NgxSnippet& s, VkInstance instance, VkPhysicalDevice pd, VkD
 
     bool created = NgxCreatePass(s, 0, width, height, recordingCmd);
     if (!created && s.snippet && s.params) {
-        auto reqs = reinterpret_cast<FnVkGetFeatureRequirements>(
-            GetProcAddress(s.snippet, "NVSDK_NGX_VULKAN_GetFeatureRequirements"));
-        if (reqs) {
-            DWORD seh3 = 0;
-            NVSDK_NGX_Result r = Guarded([&] { return reqs(instance, pd, s.params); },
-                                         NVSDK_NGX_Result_FAIL_SEH, &seh3);
-            Log("[diag] GetFeatureRequirements -> %#x seh=%#x", (uint32_t)r, seh3);
-            unsigned int avail = 0;
-            ParamGetUI(s.params, "DLSSNR.Available", &avail, &seh3);
-            Log("[diag] DLSSNR.Available=%u", avail);
-        }
+        QueryRequirements(s,instance,pd);
+        unsigned int avail=0;DWORD diagnosticSeh=0;
+        if(ParamGetUI(s.params,"DLSSNR.Available",&avail,&diagnosticSeh))
+            Log("[diag] DLSSNR.Available=%u",avail);
+        else Log("[diag] DLSSNR.Available not supplied (seh=%#x)",diagnosticSeh);
     }
     return created;
 }
@@ -413,8 +404,8 @@ void NgxReleaseAllPasses(NgxSnippet& s, VkDevice device) {
 }
 
 void NgxSetHdr(NgxSnippet& s, bool want) {
-    // Raw: the caller decides, the create either succeeds or the helper falls back. Clamping to
-    // hdrCapable here would silently swallow the request before init has learned the capability.
+    // Explicit experimental mode. Creation success alone does not verify HDR
+    // input/output semantics, and GetFeatureRequirements cannot advertise them.
     s.hdrActive = want;
 }
 
