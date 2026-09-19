@@ -36,7 +36,7 @@ for path in sorted((out/'runs').glob('*/result.json')):
     r=json.loads(path.read_text())
     if r.get('inline'):reports[r.get('case')]=(path,r)
 cases=('native-baseline','bootstrap-wsi','bootstrap-forward','bootstrap-track','bootstrap-bda',
-       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr','groups-core','groups-khr')
+       'launcher','disabled','missing-dll','bda-auto','armed-cycle','real-sr','groups-core','groups-khr','ext-bda','ext-bda-auto','ext-real-sr')
 for case in cases:
     require(case in reports,f'Missing native validation gate: {case}')
     path,r=reports[case]
@@ -46,7 +46,7 @@ for case in cases:
             r.get('native_loader_sha256')==NATIVE and r.get('shim_sha256')==expected and
             r.get('probe_sha256')==sha(out/fixture),f'Failed or stale gate: {path}')
     require(r.get('dll_sha256')==sha(home/'.local/share/dlssnr/binaries/nvngx_dlssnr.dll'),'NR model changed since validation')
-    if case=='real-sr':require(r.get('sr_dll_sha256')==sha(game/'nvngx_dlss.dll'),'Game SR DLL changed')
+    if case in ('real-sr','ext-real-sr'):require(r.get('sr_dll_sha256')==sha(game/'nvngx_dlss.dll'),'Game SR DLL changed')
 proxy=repo/'build/ngx-capture/version.dll'
 ngx_reports=sorted((repo/'build/ngx-capture/runs').glob('*/result.json'))
 require(bool(ngx_reports),'NGX proxy has not been tested');ngx_report=ngx_reports[-1]

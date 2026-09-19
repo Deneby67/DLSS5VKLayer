@@ -146,7 +146,7 @@ static bool HasDeviceExt(VkPhysicalDevice phys, const char* name) {
     return false;
 }
 
-static bool CreateContext(VkCtx& c, bool frameGeneration = false, unsigned enumerateGroups = 0) {
+static bool CreateContext(VkCtx& c, bool frameGeneration = false, unsigned enumerateGroups = 0, bool extAddress = false) {
     g_vkModule = LoadLibraryA("vulkan-1.dll");
     if (!g_vkModule) { Log("[helper] no vulkan-1.dll"); return false; }
     g_gipa = (PFN_vkGetInstanceProcAddr)GetProcAddress(g_vkModule, "vkGetInstanceProcAddr");
@@ -276,6 +276,10 @@ static bool CreateContext(VkCtx& c, bool frameGeneration = false, unsigned enume
                            VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
                            VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME })
         if (HasDeviceExt(c.physical, e)) enabled.push_back(e);
+    if(extAddress) {
+        if(!HasDeviceExt(c.physical,"VK_EXT_buffer_device_address"))return false;
+        for(auto& name:enabled)if(!strcmp(name,"VK_KHR_buffer_device_address"))name="VK_EXT_buffer_device_address";
+    }
     c.sync2 = HasDeviceExt(c.physical, "VK_KHR_synchronization2");
     VkPhysicalDeviceOpticalFlowFeaturesNV flowFeatures{};
     flowFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV;
@@ -289,14 +293,20 @@ static bool CreateContext(VkCtx& c, bool frameGeneration = false, unsigned enume
     if (c.opticalFlow) dci.pNext = &flowFeatures;
     else if (c.sync2) dci.pNext = &sync2Features;
     VkPhysicalDeviceBufferDeviceAddressFeatures bda{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+    VkPhysicalDeviceBufferDeviceAddressFeaturesEXT extBda{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_EXT};
     if (frameGeneration) {
         auto getFeatures=reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(g_gipa(c.instance,"vkGetPhysicalDeviceFeatures2"));
-        VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; features.pNext=&bda;
+        VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; features.pNext=extAddress?static_cast<void*>(&extBda):static_cast<void*>(&bda);
         if (!getFeatures) return false;
         getFeatures(c.physical,&features);
-        if (!bda.bufferDeviceAddress) { Log("[fg] bufferDeviceAddress is unavailable"); return false; }
-        bda.bufferDeviceAddressCaptureReplay=VK_FALSE; bda.bufferDeviceAddressMultiDevice=VK_FALSE;
-        bda.pNext=const_cast<void*>(dci.pNext); dci.pNext=&bda;
+        if (!(extAddress?extBda.bufferDeviceAddress:bda.bufferDeviceAddress)) { Log("[fg] bufferDeviceAddress is unavailable"); return false; }
+        if(extAddress) {
+            extBda.bufferDeviceAddressCaptureReplay=VK_FALSE;extBda.bufferDeviceAddressMultiDevice=VK_FALSE;
+            extBda.pNext=const_cast<void*>(dci.pNext);dci.pNext=&extBda;
+        } else {
+            bda.bufferDeviceAddressCaptureReplay=VK_FALSE; bda.bufferDeviceAddressMultiDevice=VK_FALSE;
+            bda.pNext=const_cast<void*>(dci.pNext); dci.pNext=&bda;
+        }
     }
     dci.queueCreateInfoCount = (uint32_t)qcis.size();
     dci.pQueueCreateInfos = qcis.data();

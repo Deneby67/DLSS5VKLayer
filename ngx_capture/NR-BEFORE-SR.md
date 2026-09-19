@@ -11,14 +11,20 @@ a device missing from the device table; the separately observed device had BDA
 and one queue in family 0. NR was disarmed again and the user closed the game.
 No NR-before-SR gameplay or visual improvement has been demonstrated yet.
 
-The new candidate also tracks core/KHR physical-device-group enumeration and
-removes mappings on instance destruction. An isolated groups-only enumeration
-test reproduces the same bypass with the previous installed shim (zero Color
-replacements); the corrected shim processes three frames. This establishes a
-real coverage bug, while actual RDR2 use of that enumeration path still needs a
-new launch to confirm. Device creation now records bounded per-creation context
-and queue information, and bypass reasons distinguish missing device, BDA and
-queue topology. No handle aliases or relaxed queue checks are introduced.
+Core/KHR physical-device-group enumeration is now tracked, with mapping cleanup
+on instance destruction. The next real RDR2 launch confirmed it uses core group
+enumeration, and the main device is now tracked with one queue in its render
+family. It still reports no KHR/core BDA feature. The game executable references
+`VK_EXT_buffer_device_address`, which was neither recognized nor augmented by
+the previous adapter. NR remains disarmed in that running game.
+
+The EXT candidate recognizes that feature and can enable it when omitted and
+supported; it never adds KHR alongside EXT and still respects explicit false
+feature declarations. Separate EXT fixtures found that both the NR and existing
+SR DLL select the EXT address command but pass the KHR-only memory-allocation
+address flag: NR alone emitted two Validation errors, actual SR emitted four.
+The scoped allocation adaptation below removes those errors without changing
+pixel output. Actual RDR2 use of this candidate still needs a fresh launch.
 
 The shim preserves the game's native prefix loader using a private, hash-pinned
 sibling copy, `dlssnr_system_vulkan.dll`; the prefix stays untouched. The two old
@@ -79,11 +85,30 @@ are updated only after a new recording begins. Queued work on that single queue
 is ordered with barriers around shared intermediates.
 
 NR needs `bufferDeviceAddress`. If absent from the game's feature declarations,
-the shim queries support and adds the KHR feature/extension without modifying
-the application's structures. An explicit existing false declaration is
+the shim queries support and adds the appropriate feature without modifying
+the application's structures: EXT when that extension was requested, otherwise
+KHR. Feature queries support both core and KHR entry points. An explicit existing false declaration is
 respected. A failed augmented device creation retries the original configuration.
 Unsupported capabilities disable NR. The driver must still support the existing
 NGX NVX device extensions used by SR.
+
+## EXT buffer-address allocation compatibility
+
+On an EXT-only device, NGX can allocate addressable buffers without the KHR
+`VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT`. The wrapper clears that bit only while
+executing its NR invocation, or for an allocation whose immediate caller is
+`nvngx_dlss.dll`/`nvngx.dll`. Other application allocations are forwarded as-is.
+It copies the allocation info and a leading flags node, preserving the device
+mask, other flags and the remainder of the chain. Caller-owned data stays
+unchanged. Capture/replay or a non-leading flags node is unsupported for NR and
+fails that allocation; unknown SR chains are forwarded untouched. No KHR feature
+is claimed to be enabled on the EXT device.
+
+The allocation correction also applies to SR creation while NR is disarmed;
+therefore a restart of this candidate tests more than NR activation alone. The
+real-SR EXT gate checks this entire path with actual GPU readback and Validation.
+Reference: [EXT buffer-address API](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_buffer_device_address.html)
+and [allocation flags](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryAllocateFlagsInfo.html).
 
 ## Build and gates
 
@@ -129,8 +154,9 @@ requires the pinned game executable, native loader, model, actual SR DLL and
 matching successful validation artifacts for the exact adapter and fixtures:
 `native-baseline`, `bootstrap-wsi`, `bootstrap-forward`, `bootstrap-track`,
 `bootstrap-bda`, `launcher`, `disabled`, `missing-dll`, `bda-auto`, `armed-cycle`,
-`real-sr`, `groups-core`, `groups-khr`, plus all six NGX observer gates.
-All thirteen gates passed after the groups change with matching binary hashes;
+`real-sr`, `groups-core`, `groups-khr`, `ext-bda`, `ext-bda-auto`, `ext-real-sr`,
+plus all six NGX observer gates. All sixteen cases passed with matching hashes
+before installation;
 the actual NR → SR fixture completed three frames without Vulkan
 validation errors. The arming fixture verified missing and stale requests leave
 pixels unchanged without loading NR, valid activation changes pixels, and
@@ -141,6 +167,9 @@ python3 tools/run-nr-inline-probe.py --inline --validation --case native-baselin
 python3 tools/run-nr-inline-probe.py --inline --validation --case armed-cycle
 python3 tools/run-nr-inline-probe.py --inline --validation --case groups-core
 python3 tools/run-nr-inline-probe.py --inline --validation --case groups-khr
+python3 tools/run-nr-inline-probe.py --inline --validation --case ext-bda
+python3 tools/run-nr-inline-probe.py --inline --validation --case ext-bda-auto
+python3 tools/run-nr-inline-probe.py --inline --validation --case ext-real-sr
 python3 tools/install-nr-native.py --dry-run
 python3 tools/install-nr-native.py
 # After restart and an SR evaluation in a loaded scene:

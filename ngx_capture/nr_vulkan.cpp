@@ -22,6 +22,12 @@ PFN_vkGetInstanceProcAddr realGipa{};
 PFN_vkGetDeviceProcAddr realGdpa{};
 INIT_ONCE once=INIT_ONCE_STATIC_INIT;
 InlineArm arm;
+thread_local bool inNrAllocationScope=false;
+struct NrAllocationScope {
+    bool previous=inNrAllocationScope;
+    NrAllocationScope(){inNrAllocationScope=true;}
+    ~NrAllocationScope(){inNrAllocationScope=previous;}
+};
 BOOL CALLBACK Resolve(PINIT_ONCE,void*,void**) {
     // Preserve the native loader/ICD chain used by RDR2. The renamed loader
     // is a hash-pinned private copy of the game's prefix DLL, beside this shim.
@@ -39,7 +45,7 @@ BOOL CALLBACK Resolve(PINIT_ONCE,void*,void**) {
     return realGipa && realGdpa;
 }
 bool resolve(){return InitOnceExecuteOnce(&once,Resolve,nullptr,nullptr);}
-struct Device { VkInstance instance{}; VkPhysicalDevice physical{}; std::set<uint32_t> singleQueues; bool bda=false; };
+struct Device { VkInstance instance{}; VkPhysicalDevice physical{}; std::set<uint32_t> singleQueues; bool bda=false,extAddress=false; };
 struct Pool { VkDevice device{}; uint32_t family=~0u; };
 struct Command { VkDevice device{}; VkCommandPool pool{}; uint32_t family=~0u; bool usable=false,used=false; };
 std::map<VkPhysicalDevice,VkInstance> physicals;
@@ -157,7 +163,7 @@ extern "C" __declspec(dllexport) uint32_t DlssNrEvaluate(void* cmd,const void* h
     if(bootstrap || !enabled || !TryAcquireSRWLockExclusive(&renderLock)) return real(cmd,handle,params,callback);
     NVSDK_NGX_Resource_VK replacement{};
     const DWORD last=GetLastError(); bool processed=false;
-    try { if(arm.allow()) processed=Process((VkCommandBuffer)cmd,handle,params,replacement); }
+    try { if(arm.allow()) {NrAllocationScope scope; processed=Process((VkCommandBuffer)cmd,handle,params,replacement);} }
     catch(...) { disabled=true; Log("[nr-inline] disabled after internal exception"); }
     ngx_capture::ColorOverlay overlay(params,&replacement);
     SetLastError(last);
@@ -214,26 +220,33 @@ extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceC
     // the game's pNext objects or silently override an explicit false field.
     VkDeviceCreateInfo selected=*info;
     VkPhysicalDeviceBufferDeviceAddressFeatures bda{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
+    VkPhysicalDeviceBufferDeviceAddressFeaturesEXT extFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_EXT};
     bool declared=false,extBda=false,hasKhr=false;
     for(auto* n=(const VkBaseInStructure*)info->pNext;n;n=n->pNext)
-        declared|=n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES || n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        declared|=n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_EXT || n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES || n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     std::vector<const char*> extensions;
     for(unsigned i=0;i<info->enabledExtensionCount;++i) {
         auto name=info->ppEnabledExtensionNames[i];extensions.push_back(name);
         extBda|=!strcmp(name,"VK_EXT_buffer_device_address");hasKhr|=!strcmp(name,"VK_KHR_buffer_device_address");
     }
-    if(enabled && augmentBda && instance && !declared && !extBda) {
+    Log("[nr-inline] BDA contract: declared=%u EXT=%u KHR=%u",unsigned(declared),unsigned(extBda),unsigned(hasKhr));
+    if(enabled && augmentBda && instance && !declared) {
         auto features=(PFN_vkGetPhysicalDeviceFeatures2)realGipa(instance,"vkGetPhysicalDeviceFeatures2");
+        if(!features)features=(PFN_vkGetPhysicalDeviceFeatures2)realGipa(instance,"vkGetPhysicalDeviceFeatures2KHR");
         auto enumerate=(PFN_vkEnumerateDeviceExtensionProperties)realGipa(instance,"vkEnumerateDeviceExtensionProperties");
-        VkPhysicalDeviceFeatures2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};queried.pNext=&bda;
+        VkPhysicalDeviceFeatures2 queried{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};queried.pNext=extBda?static_cast<void*>(&extFeatures):static_cast<void*>(&bda);
         uint32_t count=0;bool supported=false;
         if(features && enumerate && enumerate(p,nullptr,&count,nullptr)==VK_SUCCESS) {
             std::vector<VkExtensionProperties> available(count);
             if(enumerate(p,nullptr,&count,available.data())==VK_SUCCESS)
-                for(auto& e:available)supported|=!strcmp(e.extensionName,"VK_KHR_buffer_device_address");
+                for(auto& e:available)supported|=!strcmp(e.extensionName,extBda?"VK_EXT_buffer_device_address":"VK_KHR_buffer_device_address");
             features(p,&queried);
         }
-        if(supported && bda.bufferDeviceAddress) {
+        if(supported && extBda && extFeatures.bufferDeviceAddress) {
+            extFeatures.bufferDeviceAddressCaptureReplay=VK_FALSE;extFeatures.bufferDeviceAddressMultiDevice=VK_FALSE;
+            extFeatures.pNext=const_cast<void*>(info->pNext);selected.pNext=&extFeatures;
+            Log("[nr-inline] enabling supported EXT bufferDeviceAddress for NR (no KHR extension added)");
+        } else if(supported && !extBda && bda.bufferDeviceAddress) {
             bda.bufferDeviceAddressCaptureReplay=VK_FALSE;bda.bufferDeviceAddressMultiDevice=VK_FALSE;
             bda.pNext=const_cast<void*>(info->pNext);selected.pNext=&bda;
             if(!hasKhr)extensions.push_back("VK_KHR_buffer_device_address");
@@ -249,10 +262,11 @@ extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceC
     Log("[nr-inline] create-device result=%d device=%p",result,result==VK_SUCCESS?*out:nullptr);
     if(enabled && result==VK_SUCCESS && !instance)Log("[nr-inline] device left untracked: physical device was not observed in enumeration");
     if(enabled && result==VK_SUCCESS && instance) {
-        Device d; d.instance=instance; d.physical=p;
+        Device d; d.instance=instance; d.physical=p; d.extAddress=extBda;
         for(unsigned i=0;i<info->queueCreateInfoCount;++i) if(info->pQueueCreateInfos[i].queueCount==1)
             d.singleQueues.insert(info->pQueueCreateInfos[i].queueFamilyIndex);
         for(auto* n=(const VkBaseInStructure*)selected.pNext;n;n=n->pNext) {
+            if(n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_EXT) d.bda=((const VkPhysicalDeviceBufferDeviceAddressFeaturesEXT*)n)->bufferDeviceAddress;
             if(n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES) d.bda=((const VkPhysicalDeviceBufferDeviceAddressFeatures*)n)->bufferDeviceAddress;
             if(n->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES) d.bda=((const VkPhysicalDeviceVulkan12Features*)n)->bufferDeviceAddress;
         }
@@ -260,6 +274,41 @@ extern "C" VkResult VKAPI_CALL NrCreateDevice(VkPhysicalDevice p,const VkDeviceC
         Log("[nr-inline] Vulkan device observed; bufferDeviceAddress=%u",unsigned(d.bda));
     }
     trace.done(result);return result;
+}
+extern "C" VkResult VKAPI_CALL NrAllocateMemory(VkDevice d,const VkMemoryAllocateInfo* info,const VkAllocationCallbacks* alloc,VkDeviceMemory* out) {
+    if(!resolve())return VK_ERROR_INITIALIZATION_FAILED;
+    auto fn=(PFN_vkAllocateMemory)realGdpa(d,"vkAllocateMemory");
+    bool ext=false;
+    if(enabled) {Lock lock(stateLock);auto it=devices.find(d);
+        ext=it!=devices.end() && it->second.bda && it->second.extAddress;}
+    if(ext) for(auto* node=(const VkBaseInStructure*)info->pNext;node;node=node->pNext) {
+        if(node->sType!=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO)continue;
+        auto flags=*reinterpret_cast<const VkMemoryAllocateFlagsInfo*>(node);
+        if(!(flags.flags&(VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT|VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT)))break;
+        if(!inNrAllocationScope) {
+            // The game's SR DLL has the same invalid KHR flag on its EXT path.
+            // Limit that correction to calls from the known NGX modules.
+            HMODULE caller{};wchar_t path[32768]{};
+            if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                  (LPCWSTR)__builtin_return_address(0),&caller))break;
+            auto length=GetModuleFileNameW(caller,path,32768);
+            auto basename=wcsrchr(path,L'\\');basename=basename?basename+1:path;
+            if(!length || length>=32768 || (_wcsicmp(basename,L"nvngx_dlss.dll") && _wcsicmp(basename,L"nvngx.dll")))break;
+        }
+        // EXT addresses do not require the KHR allocation flag. Some NGX builds
+        // choose the EXT address command but still supply that KHR-only flag.
+        // Adapt only NGX allocations, without mutating caller-owned chains.
+        if(info->pNext!=node || flags.flags&VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT) {
+            if(!inNrAllocationScope)break; // Preserve unknown SR allocation contracts.
+            Log("[nr-inline] unsupported NR EXT address allocation chain; allocation refused");
+            *out=VK_NULL_HANDLE;return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
+        flags.flags&=~VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        VkMemoryAllocateInfo selected=*info;selected.pNext=&flags;
+        Log("[nr-inline] adapting NGX allocation to EXT buffer address semantics");
+        return fn(d,&selected,alloc,out);
+    }
+    return fn(d,info,alloc,out);
 }
 extern "C" VkResult VKAPI_CALL NrCreatePool(VkDevice d,const VkCommandPoolCreateInfo* info,const VkAllocationCallbacks* a,VkCommandPool* out) {
     BootstrapTrace trace("vkCreateCommandPool",bootstrap);
@@ -375,6 +424,7 @@ static PFN_vkVoidFunction Wrap(const char* n,PFN_vkVoidFunction original) {
     HOOK("vkEnumeratePhysicalDevices",NrEnumerate) HOOK("vkCreateDevice",NrCreateDevice)
     HOOK("vkEnumeratePhysicalDeviceGroups",NrGroups) HOOK("vkEnumeratePhysicalDeviceGroupsKHR",NrGroupsKHR)
     HOOK("vkDestroyInstance",NrDestroyInstance)
+    HOOK("vkAllocateMemory",NrAllocateMemory)
     HOOK("vkCreateCommandPool",NrCreatePool) HOOK("vkDestroyCommandPool",NrDestroyPool)
     HOOK("vkAllocateCommandBuffers",NrAllocate) HOOK("vkFreeCommandBuffers",NrFree)
     HOOK("vkBeginCommandBuffer",NrBegin) HOOK("vkDestroyDevice",NrDestroyDevice)
