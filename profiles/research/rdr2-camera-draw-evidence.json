@@ -16,8 +16,16 @@
     "binding": 29,
     "observed_descriptor_range": 464,
     "matrix_storage": "column_major",
-    "static_chain_to_builtin_position_left_to_right_offsets": [128, 64, 0],
-    "static_second_chain_left_to_right_offsets": [400, 336, 272],
+    "static_chain_to_builtin_position_left_to_right_offsets": [
+      128,
+      64,
+      0
+    ],
+    "static_second_chain_left_to_right_offsets": [
+      400,
+      336,
+      272
+    ],
     "second_chain_output_location": 8,
     "second_chain_output_note": "XY is additionally scaled and Y-flipped using other resources; it is not an identified motion image.",
     "temporal_pairing_verified": false
@@ -25,10 +33,29 @@
   "paired_fragment_shader": {
     "sha256": "e2a7fb68d2df93d2f1aefae1d6e862e6f903eb5c6a0d14c1b6060658d1ed1e58",
     "binary_available_in_initial_dump": false,
-    "reason": "Initial 128 MiB shader dump budget exhausted."
+    "reason": "Initial 128 MiB shader dump budget exhausted.",
+    "binary_available_in_expanded_dump": true,
+    "static_output": {
+      "location": 4,
+      "components": 2,
+      "fragment_origin": "upper_left",
+      "expression": "input_location_8.xy / input_location_8.w + 0.5 * storage_set_0_binding_98_element_0_offset_24.xy - fragment_coord.xy",
+      "vertex_input_chain": "Matrices at offsets 400, 336, 272 transform the input position. Its XY is scaled by (0.5, -0.5) and storage set 0 binding 98 element 0 offset 24 XY before output location 8.",
+      "interpretation": "Reprojected screen position minus current fragment position; pixel-space displacement candidate.",
+      "screen_size_resource_observed": false,
+      "previous_frame_identity_verified": false,
+      "jitter_convention_verified": false,
+      "gpu_image_contents_verified": false
+    }
   },
   "one_pipeline_render_pass_declaration": {
-    "color_formats": ["VK_FORMAT_R8G8B8A8_SRGB", "VK_FORMAT_R8G8B8A8_UNORM", "VK_FORMAT_R8G8B8A8_UNORM", "VK_FORMAT_R8G8B8A8_UNORM", "VK_FORMAT_R16G16_SFLOAT"],
+    "color_formats": [
+      "VK_FORMAT_R8G8B8A8_SRGB",
+      "VK_FORMAT_R8G8B8A8_UNORM",
+      "VK_FORMAT_R8G8B8A8_UNORM",
+      "VK_FORMAT_R8G8B8A8_UNORM",
+      "VK_FORMAT_R16G16_SFLOAT"
+    ],
     "depth_stencil_format": "VK_FORMAT_D32_SFLOAT_S8_UINT",
     "actual_draw_framebuffer_verified": false,
     "motion_image_verified": false,

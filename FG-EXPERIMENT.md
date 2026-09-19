@@ -483,3 +483,14 @@ and D32 depth attachments in primary/secondary commands with both RenderPass and
 RenderPass2, inside Steam Runtime with Vulkan Validation Layers. Dynamic target
 resolution currently has state-test coverage only. Gameplay target selection,
 motion encoding and depth readback are still required.
+
+The expanded shader dump contains the paired fragment shader
+`e2a7fb68d2df93d2f1aefae1d6e862e6f903eb5c6a0d14c1b6060658d1ed1e58`.
+Static dataflow shows a two-component output at location 4: input location 8
+XY divided by W, plus half of storage set 0 binding 98 element 0 byte offset
+24 XY, minus the current fragment coordinate. The vertex stage scales that
+input by the same resource and flips Y; the fragment origin is upper-left.
+This identifies a pixel-space displacement candidate. The resource's actual
+value, previous-frame identity, jitter convention and image contents are still
+unverified. The shader binaries and decompiled sources remain private build
+artifacts; only hashes and structural research evidence are recorded here.
