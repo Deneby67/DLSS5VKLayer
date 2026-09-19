@@ -494,3 +494,33 @@ This identifies a pixel-space displacement candidate. The resource's actual
 value, previous-frame identity, jitter convention and image contents are still
 unverified. The shader binaries and decompiled sources remain private build
 artifacts; only hashes and structural research evidence are recorded here.
+
+### RDR2 target evidence and NGX integration direction
+
+Two completed scene windows contain 532 successful CPU submission samples.
+Five draw links with the researched vertex/fragment pair, at five distinct CPU
+present markers, reference the same framebuffer and resource generations.
+Color slot 4 is RG16F and depth is D32F+S8, both 2293x960. Both declare STORE and
+TRANSFER_SRC usage. These are recorded references, not readback or proof of
+GPU completion; final layout, queue ownership and copy timing remain unresolved.
+`tools/analyze-render-targets.py` reproducibly selects that exact legacy pass
+signature, rejects stale/partial/failed observations, and keeps process sessions
+separate. Reports with session identities stay private under `build/`.
+
+The preferred next interception point is the game's **existing Vulkan NGX DLSS
+EvaluateFeature call**, rather than extending heuristic attachment capture first.
+The running process loads the driver's `nvngx.dll` and `_nvngx.dll`, plus the
+application's `nvngx_dlss.dll`. The loader exports the Vulkan evaluate entry point.
+Loading alone does not prove which entry point is called; tracing is still needed.
+The [official Vulkan DLSS helper](https://github.com/NVIDIA/DLSS/blob/main/include/nvsdk_ngx_helpers_vk.h)
+passes named color/output/depth/motion resources, jitter, motion scale and reset
+through the parameter object. Observe inputs before forwarding the real call;
+output availability is GPU-ordered after the recorded DLSS work, not simply after
+the CPU function returns. Keep native resource ownership and Wine handle wrapping
+explicit. No proxy has been installed in RDR2 yet.
+
+This route requires the game's DLSS path to execute. It does not supply every FG
+camera constant automatically, nor solve HUD composition, tone mapping or paced
+presentation. Existing shader/camera evidence remains useful for missing data
+and corroboration. Optical flow remains the intended fallback for unavailable
+engine motion, not a replacement for valid depth/camera/frame identity.

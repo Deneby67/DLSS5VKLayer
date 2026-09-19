@@ -4,6 +4,6 @@
   "enabled": false,
   "executable": "RDR2.exe",
   "optical_flow_fallback": true,
-  "status": "camera_draw_linked_unverified",
-  "notes": "Camera candidates at set 0 bindings 29/31 now have recorded draw links and static vertex-shader matrix-chain evidence. GPU frame identity, translation conventions, depth and motion image contents remain unverified. Keep disabled until those are established; research evidence is not a runnable profile."
+  "status": "ngx_capture_pending",
+  "notes": "Prefer interception of the existing Vulkan NGX DLSS evaluation to observe named color, output, depth, motion, jitter, scale and reset parameters. Two completed Vulkan diagnostic windows also identify matching RG16F motion-candidate and D32F+S8 depth targets. Camera semantics, GPU frame identity, resource preservation and FG presentation remain unverified; profile stays disabled."
 }
