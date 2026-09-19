@@ -123,8 +123,9 @@ varies between evaluations, reset is zero, all observed subrect origins are zero
 and pre-exposure is 1. The actual exposure texel has not been read. The frame-time
 parameter is present but zero, so cannot serve as our timing source.
 
-`InvViewProjectionMatrix` and `ClipToPrevClipMatrix` return parameter-not-found
-(`0xbad00010`). Missing camera data still requires a separate validated engine
+`InvViewProjectionMatrix` and `ClipToPrevClipMatrix` return
+`NVSDK_NGX_Result_FAIL_UnsupportedParameter` (`0xbad00010`); no values were obtained
+through these getters. Missing camera data still requires a separate validated engine
 path. HDR input/exposure must be preserved by NR before SR; the final SDR output
 restriction does not permit treating the game's pre-SR buffer as SDR.
 
