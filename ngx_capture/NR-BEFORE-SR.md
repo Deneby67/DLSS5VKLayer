@@ -13,8 +13,9 @@ The previous observer and launch wrapper were restored and the application-local
 Vulkan DLL/inline selection marker removed. Reinstallation through the installer
 is disabled until startup has been diagnosed and validated. The forward-only
 startup diagnostic also reproduced the hang and has now been removed. The
-next launch forces builtin Vulkan with both NR paths disabled; menu confirmation
-is pending. Both experimental installers are blocked. See startup isolation below.
+working startup has been restored and the user confirmed the menu. Both NR
+paths are disabled and both experimental installers are blocked. The actual
+loader is the game's native prefix Vulkan DLL, not Wine's builtin loader. See startup isolation below.
 
 The NGX observer dispatches known SuperSampling feature evaluations to an
 application-local Vulkan forwarding shim. The shim records HDR encoding, NR,
@@ -215,3 +216,29 @@ the working observer and disabling both NR paths. The already-running process
 still mapped the deleted experimental file; only a full game restart applies
 this rollback. The separate bootstrap installer is now blocked as well. A fresh
 menu check is pending; no successful NR-before-SR gameplay result is claimed.
+
+### Working control and loader identity (confirmed)
+
+The user confirmed working startup after removing the application-local DLL.
+Inspection of the live process showed **the native Windows Vulkan loader from
+the game's prefix**, not Wine's builtin vulkan-1. Proton's `nativevulkanloader`
+compatibility setting appends `vulkan-1=n` after the wrapper's attempted builtin
+override, so the final override wins. The prefix DLL is 1,006,904 bytes, SHA-256
+`9de5d9a7a1c14152bac98318c63d540520da16b8826bf96a76bef90a5d223906`;
+Proton's builtin DLL is 53,248 bytes, SHA-256
+`47e1f9fe11a05b7aaa21133272f49eede4ed6baf2635eeb80c45705f4763107f`.
+
+**Architecture mismatch:** the experimental shim forwarded directly to winevulkan
+and its synthetic fixtures tested that route. It therefore bypassed the native
+loader used by the working RDR2 configuration. The successful standalone tests
+were not testing the same loader chain. This is a verified discrepancy and a
+strong investigation lead, not proof of every step causing the game's lock wait.
+Any replacement must preserve the actual native loader chain and validate it
+in the isolated fixtures before another installation. Repeating the direct
+winevulkan-forwarding experiment is not an appropriate next test.
+
+The working control retains the previous NGX observer and Stable Proton. Both
+presentation NR and inline NR remain disabled. NR-before-SR gameplay is still
+unimplemented as a validated working integration. The diagnostic record's old
+`builtin_vulkan...` label describes the intended override, **not the observed
+runtime loader**, and must not be used as evidence of builtin Vulkan loading.
